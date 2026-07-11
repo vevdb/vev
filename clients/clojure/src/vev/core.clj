@@ -1605,7 +1605,37 @@
                            (long (aget values index))]))
         (persistent! out)))))
 
-(defn- optimized-query-output [source prepared inputs entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
+(defn- string-string-int-triple-rows [columns]
+  (let [^objects columns columns
+        ^objects first-values (aget columns 0)
+        ^objects second-values (aget columns 1)
+        ^longs third-values (aget columns 2)
+        n (alength first-values)]
+    (loop [index 0
+           out (transient [])]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(aget first-values index)
+                           (aget second-values index)
+                           (long (aget third-values index))]))
+        (persistent! out)))))
+
+(defn- string-string-int-triple-set [columns]
+  (let [^objects columns columns
+        ^objects first-values (aget columns 0)
+        ^objects second-values (aget columns 1)
+        ^longs third-values (aget columns 2)
+        n (alength first-values)]
+    (loop [index 0
+           out (transient #{})]
+      (if (< index n)
+        (recur (inc index)
+               (conj! out [(aget first-values index)
+                           (aget second-values index)
+                           (long (aget third-values index))]))
+        (persistent! out)))))
+
+(defn- optimized-query-output [source prepared inputs entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn string-string-int-triple-fn]
   (if-let [columns (column-result source prepared inputs)]
     (let [^Vev$ColumnResult columns columns
           ^ints kinds (.kinds columns)
@@ -1650,6 +1680,12 @@
              (= (aget kinds 2) Vev/COLUMN_INT))
         (triple-fn values)
 
+        (and (= (alength kinds) 3)
+             (= (aget kinds 0) Vev/COLUMN_STRING)
+             (= (aget kinds 1) Vev/COLUMN_STRING)
+             (= (aget kinds 2) Vev/COLUMN_INT))
+        (string-string-int-triple-fn values)
+
         :else
         nil))
     (if-let [ids (entity-column source prepared inputs)]
@@ -1661,7 +1697,7 @@
           (when-let [columns (entity-string-int-triples source prepared inputs)]
             (triple-fn columns)))))))
 
-(defn- optimized-column-output [^Vev$ColumnResult columns entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
+(defn- optimized-column-output [^Vev$ColumnResult columns entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn string-string-int-triple-fn]
   (when columns
     (let [^ints kinds (.kinds columns)
           ^objects values (.columns columns)]
@@ -1705,10 +1741,16 @@
              (= (aget kinds 2) Vev/COLUMN_INT))
         (triple-fn values)
 
+        (and (= (alength kinds) 3)
+             (= (aget kinds 0) Vev/COLUMN_STRING)
+             (= (aget kinds 1) Vev/COLUMN_STRING)
+             (= (aget kinds 2) Vev/COLUMN_INT))
+        (string-string-int-triple-fn values)
+
         :else
         nil))))
 
-(defn- relation-db-query-output [query rows inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
+(defn- relation-db-query-output [query rows inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn string-string-int-triple-fn]
   (with-open [engine (load-engine)
               prepared (.prepare engine (edn-text query))]
     (or (optimized-column-output (.queryRelationDbColumns engine (edn-text rows) prepared (inputs-text inputs))
@@ -1718,7 +1760,8 @@
                                  string-pair-fn
                                  string-int-fn
                                  string-string-fn
-                                 triple-fn)
+                                 triple-fn
+                                 string-string-int-triple-fn)
         (with-open [result (.queryRelationDb engine (edn-text rows) prepared (inputs-text inputs))]
           (result-fn result)))))
 
@@ -1740,7 +1783,8 @@
                                          entity-string-pair-rows
                                          string-int-pair-rows
                                          string-string-pair-rows
-                                         entity-string-int-triple-rows))
+                                         entity-string-int-triple-rows
+                                         string-string-int-triple-rows))
     (if (= :relation (query-find-shape query))
       (let [materialize #(relation-db-query-output query rows inputs
                                                    q-from-result
@@ -1750,7 +1794,8 @@
                                                    entity-string-pair-set
                                                    string-int-pair-set
                                                    string-string-pair-set
-                                                   entity-string-int-triple-set)
+                                                   entity-string-int-triple-set
+                                                   string-string-int-triple-set)
             row-count (or (relation-source-fast-projected-count query rows)
                           (relation-db-result-count query rows inputs))]
         (if (and row-count (> row-count 100000))
@@ -1766,10 +1811,11 @@
                                  entity-string-pair-rows
                                  string-int-pair-rows
                                  string-string-pair-rows
-                                 entity-string-int-triple-rows)))))
+                                 entity-string-int-triple-rows
+                                 string-string-int-triple-rows)))))
 
-(defn- prepared-query-output [source prepared inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
-  (or (optimized-query-output source prepared inputs entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn)
+(defn- prepared-query-output [source prepared inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn string-string-int-triple-fn]
+  (or (optimized-query-output source prepared inputs entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn string-string-int-triple-fn)
       (with-open [result (apply query-result source prepared inputs)]
         (result-fn result))))
 
@@ -1790,20 +1836,20 @@
                                 (edn-text rules)
                                 (inputs-text inputs))))
 
-(defn- query-output [source prepared rules inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
+(defn- query-output [source prepared rules inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn string-string-int-triple-fn]
   (if rules
     (with-open [result (apply query-result-with-rules source prepared rules inputs)]
       (result-fn result))
-    (prepared-query-output source prepared inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn)))
+    (prepared-query-output source prepared inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn string-string-int-triple-fn)))
 
-(defn- query-output-with-auto-fns [source query prepared rules inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
+(defn- query-output-with-auto-fns [source query prepared rules inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn string-string-int-triple-fn]
   (if-let [registry (auto-query-fns source query)]
     (with-open [registry registry]
       (if rules
         (with-open [result (apply query-result-with-rules source prepared rules inputs)]
           (result-fn result))
         (prepared-query-output-with-fns source prepared inputs registry result-fn)))
-    (query-output source prepared rules inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn)))
+    (query-output source prepared rules inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn string-string-int-triple-fn)))
 
 (defn rows
   "Run a query and return rows as a vector of Clojure vectors.
@@ -1825,7 +1871,8 @@
                                  entity-string-pair-rows
                                  string-int-pair-rows
                                  string-string-pair-rows
-                                 entity-string-int-triple-rows)
+                                 entity-string-int-triple-rows
+                                 string-string-int-triple-rows)
           (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
             (with-open [prepared (prepare source query)]
               (let [result (query-output-with-auto-fns source query prepared rules inputs
@@ -1836,7 +1883,8 @@
                                                        entity-string-pair-rows
                                                        string-int-pair-rows
                                                        string-string-pair-rows
-                                                       entity-string-int-triple-rows)]
+                                                       entity-string-int-triple-rows
+                                                       string-string-int-triple-rows)]
                 (if-let [return-map (query-return-map query)]
                   (keyed-rows return-map result)
                   result)))))))))
@@ -1859,21 +1907,44 @@
                                  entity-string-pair-set
                                  string-int-pair-set
                                  string-string-pair-set
-                                 entity-string-int-triple-set)
+                                 entity-string-int-triple-set
+                                 string-string-int-triple-set)
           (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
             (with-open [prepared (prepare source query)]
-              (let [result (query-output-with-auto-fns source query prepared rules inputs
-                                                       rows-from-result
-                                                       entity-column-rows
-                                                       string-column-rows
-                                                       entity-int-pair-rows
-                                                       entity-string-pair-rows
-                                                       string-int-pair-rows
-                                                       string-string-pair-rows
-                                                       entity-string-int-triple-rows)]
-                (if-let [return-map (query-return-map query)]
-                  (keyed-set return-map result)
-                  (apply-find-shape query result))))))))))
+              (if-let [return-map (query-return-map query)]
+                (let [result (query-output-with-auto-fns source query prepared rules inputs
+                                                         rows-from-result
+                                                         entity-column-rows
+                                                         string-column-rows
+                                                         entity-int-pair-rows
+                                                         entity-string-pair-rows
+                                                         string-int-pair-rows
+                                                         string-string-pair-rows
+                                                         entity-string-int-triple-rows
+                                                         string-string-int-triple-rows)]
+                  (keyed-set return-map result))
+                (if (= :relation (query-find-shape query))
+                  (query-output-with-auto-fns source query prepared rules inputs
+                                             q-from-result
+                                             entity-column-set
+                                             string-column-set
+                                             entity-int-pair-set
+                                             entity-string-pair-set
+                                             string-int-pair-set
+                                             string-string-pair-set
+                                             entity-string-int-triple-set
+                                             string-string-int-triple-set)
+                  (let [result (query-output-with-auto-fns source query prepared rules inputs
+                                                           rows-from-result
+                                                           entity-column-rows
+                                                           string-column-rows
+                                                           entity-int-pair-rows
+                                                           entity-string-pair-rows
+                                                           string-int-pair-rows
+                                                           string-string-pair-rows
+                                                           entity-string-int-triple-rows
+                                                           string-string-int-triple-rows)]
+                    (apply-find-shape query result)))))))))))
 
 (defn query
   "Run a Datomic-style query.

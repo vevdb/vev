@@ -6,6 +6,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STORE="${1:-$ROOT/build/musicbrainz/vev-mbrainz-tutorial.sqlite}"
+WORKLOAD="${2:-all}"
 
 if [[ ! -f "$STORE" ]]; then
   echo "missing persistent MusicBrainz Vev store: $STORE" >&2
@@ -18,7 +19,7 @@ BIN="$(mktemp "${TMPDIR:-/tmp}/vev-mbrainz-kvist-bin.XXXXXX")"
 trap 'rm -f "$OUTPUT" "$BIN"' EXIT
 
 kvist build "$ROOT/examples/kvist/musicbrainz_workshop.kvist" --out "$BIN" >/dev/null
-"$BIN" "$STORE" | tee "$OUTPUT"
+"$BIN" "$STORE" "$WORKLOAD" | tee "$OUTPUT"
 
 if grep -q "ok=false" "$OUTPUT"; then
   exit 1

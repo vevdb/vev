@@ -10,6 +10,9 @@ STORE="$ROOT/build/musicbrainz/vev-mbrainz-tutorial.sqlite"
 DATOMIC_URI="${DATOMIC_URI:-datomic:dev://localhost:4334/mbrainz-1968-1973}"
 ENGINE="all"
 RUN_KVIST="true"
+QUERY_STATS="false"
+WARMUP_RUNS="0"
+MEASURE_RUNS="1"
 
 usage() {
   cat <<EOF
@@ -20,6 +23,10 @@ Clojure, Vev Kvist, and Datomic when requested.
 
 options:
   --engine all|vev|datomic  Clojure comparison engine; default: all
+  --workload name           workload name or suffix; default: all
+  --query-stats             print Vev query stats for selected workload(s)
+  --warmup-runs n           unreported warmup runs per workload; default: 0
+  --measure-runs n          measured runs per workload; default: 1
   --skip-datomic            run only Vev Clojure plus Kvist validation
   --skip-kvist              skip the Kvist workshop validation
   --datomic-uri uri         Datomic URI; default: $DATOMIC_URI
@@ -33,6 +40,10 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --engine) ENGINE="$2"; shift 2 ;;
+    --workload) WORKLOAD="$2"; shift 2 ;;
+    --query-stats) QUERY_STATS="true"; shift ;;
+    --warmup-runs) WARMUP_RUNS="$2"; shift 2 ;;
+    --measure-runs) MEASURE_RUNS="$2"; shift 2 ;;
     --skip-datomic) ENGINE="vev"; shift ;;
     --skip-kvist) RUN_KVIST="false"; shift ;;
     --datomic-uri) DATOMIC_URI="$2"; shift 2 ;;
@@ -59,7 +70,7 @@ if [[ ! -f "$JAVA_OUT/dev/vevdb/vev/Vev.class" || "$ROOT/clients/java/src/main/j
 fi
 
 if [[ "$RUN_KVIST" == "true" && "$ENGINE" != "datomic" ]]; then
-  "$ROOT/scripts/musicbrainz_workshop_kvist.sh"
+  "$ROOT/scripts/musicbrainz_workshop_kvist.sh" "$STORE" "${WORKLOAD:-all}"
 fi
 
 if [[ "$ENGINE" != "vev" ]]; then
@@ -74,4 +85,8 @@ clojure \
            :paths [\"$JAVA_OUT\" \"$ROOT/clients/clojure/src\" \"$ROOT/examples/clojure\" \"$ROOT/scripts\"]}" \
   -M "$ROOT/scripts/compare_musicbrainz_workshop.clj" \
   --engine "$ENGINE" \
+  --workload "${WORKLOAD:-all}" \
+  --query-stats "$QUERY_STATS" \
+  --warmup-runs "$WARMUP_RUNS" \
+  --measure-runs "$MEASURE_RUNS" \
   --datomic-uri "$DATOMIC_URI"

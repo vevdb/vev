@@ -203,6 +203,130 @@
         (delete part))
       out)))
 
+(defn selected-section? [selected: string, label: string] -> bool
+  (or (= selected "all")
+      (= selected label)
+      (strings.has_suffix label selected)))
+
+(defn validate-focused-mbrainz-data-query! [snapshot: ^vev.Store-DB, selected: string, passed: ^bool] -> bool
+  (let [ran false]
+    (when (selected-section? selected "mbrainz-title-by-artist")
+      (set! ran true)
+      (validate-query-result! "mbrainz-title-by-artist"
+        (vev.q-result-store-db
+          [:find ?title
+           :in $ ?artist-name
+           :where
+           [?a :artist/name ?artist-name]
+           [?t :track/artists ?a]
+           [?t :track/name ?title]]
+          snapshot
+          "John Lennon")
+        70 passed))
+    (when (selected-section? selected "mbrainz-title-album-year-by-artist")
+      (set! ran true)
+      (validate-query-result! "mbrainz-title-album-year-by-artist"
+        (vev.q-result-store-db
+          [:find ?title ?album ?year
+           :in $ ?artist-name
+           :where
+           [?a :artist/name ?artist-name]
+           [?t :track/artists ?a]
+           [?t :track/name ?title]
+           [?m :medium/tracks ?t]
+           [?r :release/media ?m]
+           [?r :release/name ?album]
+           [?r :release/year ?year]]
+          snapshot
+          "John Lennon")
+        93 passed))
+    (when (selected-section? selected "mbrainz-pre-1970-title-album-year")
+      (set! ran true)
+      (validate-query-result! "mbrainz-pre-1970-title-album-year"
+        (vev.q-result-store-db
+          [:find ?title ?album ?year
+           :in $ ?artist-name
+           :where
+           [?a :artist/name ?artist-name]
+           [?t :track/artists ?a]
+           [?t :track/name ?title]
+           [?m :medium/tracks ?t]
+           [?r :release/media ?m]
+           [?r :release/name ?album]
+           [?r :release/year ?year]
+           [(< ?year 1970)]]
+          snapshot
+          "John Lennon")
+        18 passed))
+    (when (selected-section? selected "mbrainz-track-release-rule")
+      (set! ran true)
+      (validate-rule-query-file! snapshot
+        "mbrainz-track-release-rule"
+        mbrainz-track-release-rule-query
+        mbrainz-sample-rules-path
+        "[\"John Lennon\"]"
+        93
+        passed))
+    (when (selected-section? selected "mbrainz-track-search-info")
+      (set! ran true)
+      (validate-rule-query-file! snapshot
+        "mbrainz-track-search-info"
+        mbrainz-track-search-info-query
+        mbrainz-sample-rules-path
+        "[\"always\"]"
+        92
+        passed))
+    (when (selected-section? selected "mbrainz-collab")
+      (set! ran true)
+      (validate-rule-query-file! snapshot
+        "mbrainz-collab"
+        mbrainz-collab-query
+        mbrainz-sample-rules-path
+        "[[\"John Lennon\" \"Paul McCartney\" \"George Harrison\" \"Ringo Starr\"]]"
+        5
+        passed))
+    (when (selected-section? selected "mbrainz-collab-net-2")
+      (set! ran true)
+      (validate-rule-query-file! snapshot
+        "mbrainz-collab-net-2"
+        mbrainz-collab-net-2-query
+        mbrainz-sample-rules-path
+        "[[\"George Harrison\"]]"
+        3
+        passed))
+    (when (selected-section? selected "mbrainz-collab-nested")
+      (set! ran true)
+      (let [[rules-data read-err] (os.read_entire_file mbrainz-sample-rules-path context.allocator)]
+        (when (!= read-err nil)
+          (fmt.printf "source=kvist section=mbrainz-collab-nested ok=false rows=0 expected=2 error=failed to read rules\n")
+          (set! passed^ false))
+        (when (= read-err nil)
+          (defer (delete rules-data))
+          (let [first-result (vev.q-result-store-db-text-with-rules-input-text
+                               snapshot
+                               mbrainz-collab-nested-query
+                               (string rules-data)
+                               "[[[\"Diana Ross\"]]]")
+                second-input (query-result-relation-input-text first-result)]
+            (defer (delete second-input))
+            (defer (vev.delete-query-result first-result))
+            (validate-rule-query! snapshot
+              "mbrainz-collab-nested"
+              mbrainz-collab-nested-query
+              (string rules-data)
+              second-input
+              2
+              passed)))))
+    (when (selected-section? selected "mbrainz-bill-withers-collaborations")
+      (set! ran true)
+      (validate-query! snapshot
+        "mbrainz-bill-withers-collaborations"
+        mbrainz-bill-withers-collaboration-query
+        "[\"Bill Withers\"]"
+        83
+        passed))
+    ran))
+
 (defn validate-log! [store: ^vev.Store-Conn, passed: ^bool]
   (when (not (= store^.kind .SQLite))
     (fmt.printf "source=kvist section=transaction-log ok=false rows=0 expected=1 error=expected sqlite store\n")
@@ -436,6 +560,7 @@
 (defn main []
   (defer (free_all context.allocator))
   (let [uri (if (> (count os.args) 1) os.args[1] default-uri)
+        selected (if (> (count os.args) 2) os.args[2] "all")
         [store store-ok store-error] (vev.open-store-read-only uri)
         passed true]
     (when (not store-ok)
@@ -447,6 +572,13 @@
         (fmt.printf "source=kvist section=store-db ok=false rows=0 expected=1 error=%s\n" snapshot-error)
         (return))
       (defer (vev.close-store-db! (addr snapshot)))
+      (when (not (= selected "all"))
+        (let [ran (validate-focused-mbrainz-data-query! (addr snapshot) selected (addr passed))]
+          (when (not ran)
+            (fmt.printf "source=kvist section=%s ok=false rows=0 expected=1 error=unknown focused MusicBrainz workload\n" selected)
+            (set! passed false))
+          (fmt.printf "source=kvist section=summary ok=%v\n" passed)
+          (return)))
       (validate-query-result! "opening-release-pulls"
         (vev.q-result-store-db
           [:find [(pull $ ?release [*])]

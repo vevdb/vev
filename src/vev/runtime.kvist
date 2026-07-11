@@ -6057,17 +6057,19 @@
       (return (Value {}) false ""))
     (let [view (db-read-source-index-view source .EAVT)
           entry (db-index-view-at view index-pos)
-          [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
-      (when (not current-ok)
-        (return (Value {}) false current-error))
-      (when (not current)
-        (return (Value {}) false ""))
+          sqlite-current-by-construction (and (= view.kind .SQLite-Cursor)
+                                              (= source.kind .SQLite-Snapshot)
+                                              (not source.sqlite-snapshot^.has-retractions))]
+      (when (not sqlite-current-by-construction)
+        (let [[current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
+          (when (not current-ok)
+            (return (Value {}) false current-error))
+          (when (not current)
+            (return (Value {}) false ""))))
       (let [datom (Datom {})
             datom-ok false
             datom-error ""]
-        (if (and (= view.kind .SQLite-Cursor)
-                 (= source.kind .SQLite-Snapshot)
-                 (not source.sqlite-snapshot^.has-retractions))
+        (if sqlite-current-by-construction
           (let [[_same-entry cursor-datom cursor-ok cursor-error] (sqlite-index-cursor-entry-and-datom-at view.sqlite-cursor index-pos)]
             (discard _same-entry)
             (set! datom cursor-datom)
@@ -13387,6 +13389,30 @@
       (let [[projection projection-ok] (db-read-source-query-multi-hop-ref-chain-projection-any-order query-value)]
         (when projection-ok
           (let [[ref-chain-rel ref-chain-ok ref-chain-error] (db-read-source-query-relation-multi-hop-ref-chain-projection-batched source query-value projection inputs (addr out-stats))]
+            (when (not (= ref-chain-error ""))
+              (delete-query-relation ref-chain-rel)
+              (return (query-relation-empty) out-stats false))
+            (when ref-chain-ok
+              (set! out-stats.steps (physical-plan-step-count plan))
+              (query-stats-observe-bindings! (addr out-stats) (query-relation-row-count ref-chain-rel))
+              (set! out-stats.output-rows (query-relation-row-count ref-chain-rel))
+              (return ref-chain-rel out-stats true))
+            (delete-query-relation ref-chain-rel))))
+      (let [[projection projection-ok] (db-read-source-query-multi-hop-ref-chain-two-final-values-projection-ordered query-value)]
+        (when projection-ok
+          (let [[ref-chain-rel ref-chain-ok ref-chain-error] (db-read-source-query-relation-multi-hop-ref-chain-two-final-values-batched source query-value projection inputs (addr out-stats))]
+            (when (not (= ref-chain-error ""))
+              (delete-query-relation ref-chain-rel)
+              (return (query-relation-empty) out-stats false))
+            (when ref-chain-ok
+              (set! out-stats.steps (physical-plan-step-count plan))
+              (query-stats-observe-bindings! (addr out-stats) (query-relation-row-count ref-chain-rel))
+              (set! out-stats.output-rows (query-relation-row-count ref-chain-rel))
+              (return ref-chain-rel out-stats true))
+            (delete-query-relation ref-chain-rel))))
+      (let [[projection projection-ok] (db-read-source-query-multi-hop-ref-chain-final-filter-projection-ordered query-value)]
+        (when projection-ok
+          (let [[ref-chain-rel ref-chain-ok ref-chain-error] (db-read-source-query-relation-multi-hop-ref-chain-final-filter-batched source query-value projection inputs (addr out-stats))]
             (when (not (= ref-chain-error ""))
               (delete-query-relation ref-chain-rel)
               (return (query-relation-empty) out-stats false))
@@ -24478,6 +24504,43 @@
           (for [name output-vars]
             (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
           (let [builder (query-relation-builder (slice attrs 0))]
+            (when (and (= read-source.kind .SQLite-Snapshot)
+                       (not read-source.sqlite-snapshot^.has-retractions))
+              (let [row 0]
+                (while (< row rel.typed-rows)
+                  (let [[search search-ok] (fulltext-search-from-typed-row rel row function)]
+                    (when search-ok
+                      (let [[candidates candidates-ok candidates-error] (sqlite-db-snapshot-attr-string-contains-datoms read-source.sqlite-snapshot attr search)]
+                        (when (not candidates-ok)
+                          (delete attrs)
+                          (delete attr-sources)
+                          (delete-query-relation-builder builder)
+                          (return (query-relation-empty) false))
+                        (for [candidate candidates]
+                          (when (and (= candidate.v.kind .String)
+                                     (fulltext-matches? search candidate.v.text))
+                            (let [row-value (db-read-source-fulltext-row-value candidate search row-width)]
+                              (let [[produced produced-ok] (typed-produced-values-from-input-binding rel row output-binding row-value (slice output-vars 0))]
+                                (when produced-ok
+                                  (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced 0)))
+                                    (delete produced)
+                                    (delete-owned-value row-value)
+                                    (delete-owned-datoms candidates)
+                                    (delete attrs)
+                                    (delete attr-sources)
+                                    (delete-query-relation-builder builder)
+                                    (return (query-relation-empty) false)))
+                                (delete produced))
+                              (delete-owned-value row-value))))
+                        (delete-owned-datoms candidates))))
+                  (set! row (+ row 1))))
+              (return (Query-Relation {attrs: attrs
+                                       attr-sources: attr-sources
+                                       attr-index: (query-relation-attr-index (slice attrs 0))
+                                       tuples: builder.tuples
+                                       typed-columns: builder.typed-columns
+                                       typed-rows: builder.typed-rows
+                                       has-typed-columns: builder.typed-ok}) true))
             (when (not stream-ok)
               (delete attrs)
               (delete attr-sources)
@@ -31355,6 +31418,221 @@
                                                     final-value-var: final-value.v.name})
             true)))
 
+(defn source-final-filter-ref-chain-projection-from-candidates [query: Query, anchor: Clause, reverse-ref: Clause, first-value: Clause, hop1: Clause, hop2: Clause, filter-clause: Clause, final-value: Clause] -> [projection: Source-Multi-Hop-Ref-Chain-Projection, ok: bool]
+  (let [[filter-op filter-value filter-ok] (source-var-range-filter query.predicates[0] filter-clause.v.name)]
+    (when (not filter-ok)
+      (return (empty-source-multi-hop-ref-chain-projection) false))
+    (when (or (not (source-multi-hop-anchor-clause? query anchor))
+              (not (source-clause-same-source? anchor reverse-ref))
+              (not (source-clause-same-source? anchor first-value))
+              (not (source-clause-same-source? anchor hop1))
+              (not (source-clause-same-source? anchor hop2))
+              (not (source-clause-same-source? anchor filter-clause))
+              (not (source-clause-same-source? anchor final-value))
+              (not (source-clause-fixed-forward-attr? reverse-ref))
+              (not (source-clause-fixed-forward-attr? first-value))
+              (not (source-clause-fixed-forward-attr? hop1))
+              (not (source-clause-fixed-forward-attr? hop2))
+              (not (source-clause-fixed-forward-attr? filter-clause))
+              (not (source-clause-fixed-forward-attr? final-value))
+              (not (= reverse-ref.e.kind .Var))
+              (not (= reverse-ref.v.kind .Var))
+              (not (= reverse-ref.v.name anchor.e.name))
+              (= reverse-ref.e.name anchor.e.name)
+              (not (source-clause-entity-var? first-value reverse-ref.e.name))
+              (not (= first-value.v.kind .Var))
+              (not (source-query-find-has-var? query first-value.v.name))
+              (not (= hop1.e.kind .Var))
+              (not (= hop1.v.kind .Var))
+              (not (= hop1.v.name reverse-ref.e.name))
+              (not (= hop2.e.kind .Var))
+              (not (= hop2.v.kind .Var))
+              (not (= hop2.v.name hop1.e.name))
+              (not (source-clause-entity-var? filter-clause hop2.e.name))
+              (not (= filter-clause.v.kind .Var))
+              (not (source-query-find-has-var? query filter-clause.v.name))
+              (not (source-clause-entity-var? final-value hop2.e.name))
+              (not (= final-value.v.kind .Var))
+              (not (source-query-find-has-var? query final-value.v.name))
+              (= first-value.v.name filter-clause.v.name)
+              (= first-value.v.name final-value.v.name)
+              (= filter-clause.v.name final-value.v.name)
+              (not (query-find-three-vars? query first-value.v.name final-value.v.name filter-clause.v.name)))
+      (return (empty-source-multi-hop-ref-chain-projection) false))
+    (return (Source-Multi-Hop-Ref-Chain-Projection {anchor-var: anchor.e.name
+                                                    anchor-attr: anchor.a.value.text
+                                                    anchor-value: (if (= anchor.v.kind .Value) anchor.v.value (value-nil))
+                                                    anchor-input-name: (if (= anchor.v.kind .Var) anchor.v.name "")
+                                                    has-anchor-input: (= anchor.v.kind .Var)
+                                                    first-entity-var: reverse-ref.e.name
+                                                    reverse-ref-attr: reverse-ref.a.value.text
+                                                    filter-attr: filter-clause.a.value.text
+                                                    filter-var: filter-clause.v.name
+                                                    filter-op: filter-op
+                                                    filter-value: filter-value
+                                                    first-value-attr: first-value.a.value.text
+                                                    first-value-var: first-value.v.name
+                                                    hop1-attr: hop1.a.value.text
+                                                    hop1-var: hop1.e.name
+                                                    hop2-attr: hop2.a.value.text
+                                                    hop2-var: hop2.e.name
+                                                    final-value-attr: final-value.a.value.text
+                                                    final-value-var: final-value.v.name})
+            true)))
+
+(defn source-two-final-value-ref-chain-projection-from-candidates [query: Query, anchor: Clause, reverse-ref: Clause, first-value: Clause, hop1: Clause, hop2: Clause, final-value: Clause, second-final-value: Clause] -> [projection: Source-Multi-Hop-Ref-Chain-Projection, ok: bool]
+  (when (or (not (source-multi-hop-anchor-clause? query anchor))
+            (not (source-clause-same-source? anchor reverse-ref))
+            (not (source-clause-same-source? anchor first-value))
+            (not (source-clause-same-source? anchor hop1))
+            (not (source-clause-same-source? anchor hop2))
+            (not (source-clause-same-source? anchor final-value))
+            (not (source-clause-same-source? anchor second-final-value))
+            (not (source-clause-fixed-forward-attr? reverse-ref))
+            (not (source-clause-fixed-forward-attr? first-value))
+            (not (source-clause-fixed-forward-attr? hop1))
+            (not (source-clause-fixed-forward-attr? hop2))
+            (not (source-clause-fixed-forward-attr? final-value))
+            (not (source-clause-fixed-forward-attr? second-final-value))
+            (not (= reverse-ref.e.kind .Var))
+            (not (= reverse-ref.v.kind .Var))
+            (not (= reverse-ref.v.name anchor.e.name))
+            (= reverse-ref.e.name anchor.e.name)
+            (not (source-clause-entity-var? first-value reverse-ref.e.name))
+            (not (= first-value.v.kind .Var))
+            (not (source-query-find-has-var? query first-value.v.name))
+            (not (= hop1.e.kind .Var))
+            (not (= hop1.v.kind .Var))
+            (not (= hop1.v.name reverse-ref.e.name))
+            (not (= hop2.e.kind .Var))
+            (not (= hop2.v.kind .Var))
+            (not (= hop2.v.name hop1.e.name))
+            (not (source-clause-entity-var? final-value hop2.e.name))
+            (not (= final-value.v.kind .Var))
+            (not (source-query-find-has-var? query final-value.v.name))
+            (not (source-clause-entity-var? second-final-value hop2.e.name))
+            (not (= second-final-value.v.kind .Var))
+            (not (source-query-find-has-var? query second-final-value.v.name))
+            (= first-value.v.name final-value.v.name)
+            (= first-value.v.name second-final-value.v.name)
+            (= final-value.v.name second-final-value.v.name)
+            (not (query-find-three-vars? query first-value.v.name final-value.v.name second-final-value.v.name)))
+    (return (empty-source-multi-hop-ref-chain-projection) false))
+  (return (Source-Multi-Hop-Ref-Chain-Projection {anchor-var: anchor.e.name
+                                                  anchor-attr: anchor.a.value.text
+                                                  anchor-value: (if (= anchor.v.kind .Value) anchor.v.value (value-nil))
+                                                  anchor-input-name: (if (= anchor.v.kind .Var) anchor.v.name "")
+                                                  has-anchor-input: (= anchor.v.kind .Var)
+                                                  first-entity-var: reverse-ref.e.name
+                                                  reverse-ref-attr: reverse-ref.a.value.text
+                                                  filter-attr: second-final-value.a.value.text
+                                                  filter-var: second-final-value.v.name
+                                                  filter-op: ""
+                                                  filter-value: (value-nil)
+                                                  first-value-attr: first-value.a.value.text
+                                                  first-value-var: first-value.v.name
+                                                  hop1-attr: hop1.a.value.text
+                                                  hop1-var: hop1.e.name
+                                                  hop2-attr: hop2.a.value.text
+                                                  hop2-var: hop2.e.name
+                                                  final-value-attr: final-value.a.value.text
+                                                  final-value-var: final-value.v.name})
+          true))
+
+(defn db-read-source-query-multi-hop-ref-chain-two-final-values-projection-ordered [query: Query] -> [projection: Source-Multi-Hop-Ref-Chain-Projection, ok: bool]
+  (when (not (and (= (count query.find) 3)
+                  (= (count query.with) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 0)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) 7)
+                  (= (count query.where-steps) 7)
+                  (query-find-vars-unique? query)))
+    (return (empty-source-multi-hop-ref-chain-projection) false))
+  (when (not (and (= query.where-steps[0].kind .Clause)
+                  (= query.where-steps[0].index 0)
+                  (= query.where-steps[1].kind .Clause)
+                  (= query.where-steps[1].index 1)
+                  (= query.where-steps[2].kind .Clause)
+                  (= query.where-steps[2].index 2)
+                  (= query.where-steps[3].kind .Clause)
+                  (= query.where-steps[3].index 3)
+                  (= query.where-steps[4].kind .Clause)
+                  (= query.where-steps[4].index 4)
+                  (= query.where-steps[5].kind .Clause)
+                  (= query.where-steps[5].index 5)
+                  (= query.where-steps[6].kind .Clause)
+                  (= query.where-steps[6].index 6)))
+    (return (empty-source-multi-hop-ref-chain-projection) false))
+  (source-two-final-value-ref-chain-projection-from-candidates
+    query
+    query.clauses[0]
+    query.clauses[1]
+    query.clauses[2]
+    query.clauses[3]
+    query.clauses[4]
+    query.clauses[5]
+    query.clauses[6]))
+
+(defn db-read-source-query-multi-hop-ref-chain-final-filter-projection-ordered [query: Query] -> [projection: Source-Multi-Hop-Ref-Chain-Projection, ok: bool]
+  (when (not (and (= (count query.find) 3)
+                  (= (count query.with) 0)
+                  (= (count query.collection-inputs) 0)
+                  (= (count query.tuple-inputs) 0)
+                  (= (count query.relation-inputs) 0)
+                  (= (count query.pulls) 0)
+                  (= (count query.aggregates) 0)
+                  (= (count query.rules) 0)
+                  (= (count query.rule-calls) 0)
+                  (= (count query.predicates) 1)
+                  (= (count query.function-clauses) 0)
+                  (= (count query.get-elses) 0)
+                  (= (count query.get-somes) 0)
+                  (= (count query.grounds) 0)
+                  (= (count query.not-groups) 0)
+                  (= (count query.or-groups) 0)
+                  (= (count query.clauses) 7)
+                  (= (count query.where-steps) 8)
+                  (query-find-vars-unique? query)))
+    (return (empty-source-multi-hop-ref-chain-projection) false))
+  (when (not (and (= query.where-steps[0].kind .Clause)
+                  (= query.where-steps[0].index 0)
+                  (= query.where-steps[1].kind .Clause)
+                  (= query.where-steps[1].index 1)
+                  (= query.where-steps[2].kind .Clause)
+                  (= query.where-steps[2].index 2)
+                  (= query.where-steps[3].kind .Clause)
+                  (= query.where-steps[3].index 3)
+                  (= query.where-steps[4].kind .Clause)
+                  (= query.where-steps[4].index 4)
+                  (= query.where-steps[5].kind .Clause)
+                  (= query.where-steps[5].index 5)
+                  (= query.where-steps[6].kind .Clause)
+                  (= query.where-steps[6].index 6)
+                  (= query.where-steps[7].kind .Predicate)
+                  (= query.where-steps[7].index 0)))
+    (return (empty-source-multi-hop-ref-chain-projection) false))
+  (source-final-filter-ref-chain-projection-from-candidates
+    query
+    query.clauses[0]
+    query.clauses[1]
+    query.clauses[2]
+    query.clauses[3]
+    query.clauses[4]
+    query.clauses[6]
+    query.clauses[5]))
+
 (defn db-read-source-query-anchor-two-branch-join-projection [query: Query] -> [projection: Source-Anchor-Two-Branch-Join-Projection, ok: bool]
   (when (not (and (= (count query.find) 3)
                   (= (count query.with) 0)
@@ -31755,6 +32033,12 @@
     (when projection-ok
       (return true)))
   (let [[_ projection-ok] (db-read-source-query-multi-hop-ref-chain-projection-any-order query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-multi-hop-ref-chain-two-final-values-projection-ordered query)]
+    (when projection-ok
+      (return true)))
+  (let [[_ projection-ok] (db-read-source-query-multi-hop-ref-chain-final-filter-projection-ordered query)]
     (when projection-ok
       (return true)))
   (let [[_ projection-ok] (db-read-source-query-anchor-two-branch-join-projection query)]
@@ -35119,6 +35403,71 @@
     (delete-source-index-datom-stream stream)
     (return true "")))
 
+(defn append-source-multi-hop-ref-chain-reverse-propagated-links! [source: DB-Read-Source, attr: string, parent-heads: ^map[u64]int, parent-links: []Source-Multi-Hop-Ref-Chain-Link, child-heads: ^map[u64]int, child-links: ^[dynamic]Source-Multi-Hop-Ref-Chain-Link] -> [ok: bool, error: string]
+  (let [[stream stream-ok stream-error] (source-index-datom-stream source attr)]
+    (when (not stream-ok)
+      (return false stream-error))
+    (while stream.has-current
+      (when (= stream.current.v.kind .Entity)
+        (let [[head found] (mmap.get parent-heads^ stream.current.v.entity)]
+          (when found
+            (let [index head]
+              (while (>= index 0)
+                (append-source-multi-hop-ref-chain-link! child-heads child-links stream.current.e (value-owned parent-links[index].filter-value) (value-owned parent-links[index].first-value) true)
+                (set! index parent-links[index].next))))))
+      (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr stream))]
+        (when (not advance-ok)
+          (delete-source-index-datom-stream stream)
+          (return false advance-error))))
+    (delete-source-index-datom-stream stream)
+    (return true "")))
+
+(defn append-source-multi-hop-ref-chain-first-value-links-from-frontier! [source: DB-Read-Source, attr: string, parent-entities: []u64, heads: ^map[u64]int, links: ^[dynamic]Source-Multi-Hop-Ref-Chain-Link] -> [ok: bool, error: string, scans: int, candidates: int]
+  (let [scan-count 0
+        candidate-count 0]
+    (for [entity parent-entities]
+      (mut! scan-count += 1)
+      (let [[stream stream-ok stream-error] (source-eavt-entity-attr-stream source entity attr)]
+        (when (not stream-ok)
+          (return false stream-error scan-count candidate-count))
+        (while stream.has-current
+          (mut! candidate-count += 1)
+          (append-source-multi-hop-ref-chain-link! heads links entity (value-nil) (value-owned stream.current.v) true)
+          (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr stream))]
+            (when (not advance-ok)
+              (delete-source-index-datom-stream stream)
+              (return false advance-error scan-count candidate-count))))
+        (delete-source-index-datom-stream stream)))
+    (return true "" scan-count candidate-count)))
+
+(defn append-source-multi-hop-ref-chain-reverse-propagated-links-from-frontier! [source: DB-Read-Source, attr: string, parent-entities: []u64, parent-heads: ^map[u64]int, parent-links: []Source-Multi-Hop-Ref-Chain-Link, child-seen: ^set[u64], child-entities: ^[dynamic]u64, child-heads: ^map[u64]int, child-links: ^[dynamic]Source-Multi-Hop-Ref-Chain-Link] -> [ok: bool, error: string, scans: int, candidates: int]
+  (let [scan-count 0
+        candidate-count 0]
+    (for [parent parent-entities]
+      (mut! scan-count += 1)
+      (let [[stream stream-ok stream-error] (source-vaet-entity-attr-stream source parent attr)]
+        (when (not stream-ok)
+          (return false stream-error scan-count candidate-count))
+        (while stream.has-current
+          (mut! candidate-count += 1)
+          (let [[head found] (mmap.get parent-heads^ parent)]
+            (when found
+              (let [child stream.current.e
+                    already-seen (set.contains? child-seen^ child)]
+                (when (not already-seen)
+                  (set.add! child-seen^ child)
+                  (arr.push! child-entities^ child))
+                (let [index head]
+                  (while (>= index 0)
+                    (append-source-multi-hop-ref-chain-link! child-heads child-links child (value-owned parent-links[index].filter-value) (value-owned parent-links[index].first-value) true)
+                    (set! index parent-links[index].next))))))
+          (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr stream))]
+            (when (not advance-ok)
+              (delete-source-index-datom-stream stream)
+              (return false advance-error scan-count candidate-count))))
+        (delete-source-index-datom-stream stream)))
+    (return true "" scan-count candidate-count)))
+
 (defn q-db-read-source-multi-hop-ref-chain-projection-batched [source: DB-Read-Source, query: Query, projection: Source-Multi-Hop-Ref-Chain-Projection, inputs: []Query-Input] -> Result-Set
   (let [rows (make [dynamic]Result-Row)
         [anchor-value anchor-value-ok anchor-value-error] (db-read-source-multi-hop-ref-chain-anchor-value source projection inputs)]
@@ -35320,6 +35669,313 @@
               (delete-query-relation-builder builder)
               (return (query-relation-empty) false advance-error))))
         (delete-source-index-datom-stream final-stream))
+      (mut! stats^.clauses += 7)
+      (return (source-query-relation-from-multi-hop-builder attrs builder) true ""))))
+
+(defn db-read-source-query-relation-multi-hop-ref-chain-final-filter-batched [source: DB-Read-Source, query: Query, projection: Source-Multi-Hop-Ref-Chain-Projection, inputs: []Query-Input, stats: ^Query-Stats] -> [rel: Query-Relation, ok: bool, error: string]
+  (when (db-read-source-has-overlay? source)
+    (return (query-relation-empty) false ""))
+  (let [attrs (arr.into [dynamic]string (slice query.find 0))
+        builder (query-relation-builder (slice attrs 0))
+        seen (set.empty string) :defer
+        [anchor-value anchor-value-ok anchor-value-error] (db-read-source-multi-hop-ref-chain-anchor-value source projection inputs)]
+    (when (not anchor-value-ok)
+      (delete attrs)
+      (delete-query-relation-builder builder)
+      (return (query-relation-empty) false anchor-value-error))
+    (let [anchor-entities (set.empty u64) :defer
+          first-entities (set.empty u64) :defer
+          first-value-heads (make (map u64 int)) :defer
+          first-value-links (make [dynamic]Source-Multi-Hop-Ref-Chain-Link)
+          hop1-heads (make (map u64 int)) :defer
+          hop1-links (make [dynamic]Source-Multi-Hop-Ref-Chain-Link)
+          hop2-heads (make (map u64 int)) :defer
+          hop2-links (make [dynamic]Source-Multi-Hop-Ref-Chain-Link)
+          final-heads (make (map u64 int)) :defer
+          final-links (make [dynamic]Source-Multi-Hop-Ref-Chain-Link)]
+      (defer (delete-source-multi-hop-ref-chain-links first-value-links))
+      (defer (delete-source-multi-hop-ref-chain-links hop1-links))
+      (defer (delete-source-multi-hop-ref-chain-links hop2-links))
+      (defer (delete-source-multi-hop-ref-chain-links final-links))
+      (let [[anchor-stream anchor-ok anchor-error] (source-attr-value-match-stream source projection.anchor-attr anchor-value)]
+        (when (not anchor-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false anchor-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += 1)
+        (while anchor-stream.has-current
+          (let [anchor-datom (source-attr-value-match-current anchor-stream)]
+            (set.add! anchor-entities anchor-datom.e)
+            (mut! stats^.clause-candidates += 1))
+          (let [[anchor-advance-ok anchor-advance-error] (advance-source-attr-value-match-stream! source (addr anchor-stream))]
+            (when (not anchor-advance-ok)
+              (delete-source-attr-value-match-stream anchor-stream)
+              (delete attrs)
+              (delete-query-relation-builder builder)
+              (return (query-relation-empty) false anchor-advance-error))))
+        (delete-source-attr-value-match-stream anchor-stream))
+      (let [[reverse-stream reverse-ok reverse-error] (source-index-datom-stream source projection.reverse-ref-attr)]
+        (when (not reverse-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false reverse-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += 1)
+        (while reverse-stream.has-current
+          (mut! stats^.clause-candidates += 1)
+          (when (and (= reverse-stream.current.v.kind .Entity)
+                     (set.contains? anchor-entities reverse-stream.current.v.entity))
+            (set.add! first-entities reverse-stream.current.e))
+          (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr reverse-stream))]
+            (when (not advance-ok)
+              (delete-source-index-datom-stream reverse-stream)
+              (delete attrs)
+              (delete-query-relation-builder builder)
+              (return (query-relation-empty) false advance-error))))
+        (delete-source-index-datom-stream reverse-stream))
+      (let [[first-value-stream first-value-ok first-value-error] (source-index-datom-stream source projection.first-value-attr)]
+        (when (not first-value-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false first-value-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += 1)
+        (while first-value-stream.has-current
+          (mut! stats^.clause-candidates += 1)
+          (when (set.contains? first-entities first-value-stream.current.e)
+            (append-source-multi-hop-ref-chain-link! (addr first-value-heads) (addr first-value-links) first-value-stream.current.e (value-nil) (value-owned first-value-stream.current.v) true))
+          (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr first-value-stream))]
+            (when (not advance-ok)
+              (delete-source-index-datom-stream first-value-stream)
+              (delete attrs)
+              (delete-query-relation-builder builder)
+              (return (query-relation-empty) false advance-error))))
+        (delete-source-index-datom-stream first-value-stream))
+      (let [[hop1-ok hop1-error] (append-source-multi-hop-ref-chain-reverse-propagated-links! source projection.hop1-attr (addr first-value-heads) (slice first-value-links 0) (addr hop1-heads) (addr hop1-links))]
+        (when (not hop1-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false hop1-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += 1)
+        (mut! stats^.clause-candidates += (count hop1-links)))
+      (let [[hop2-ok hop2-error] (append-source-multi-hop-ref-chain-reverse-propagated-links! source projection.hop2-attr (addr hop1-heads) (slice hop1-links 0) (addr hop2-heads) (addr hop2-links))]
+        (when (not hop2-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false hop2-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += 1)
+        (mut! stats^.clause-candidates += (count hop2-links)))
+      (let [filter-range-projection (Source-Attr-Range-Value-Projection {attr: projection.filter-attr
+                                                                          value-var: projection.filter-var
+                                                                          op: projection.filter-op
+                                                                          value: projection.filter-value})
+            [filter-stream filter-ok filter-error] (source-index-datom-stream-for-attr-range source filter-range-projection)]
+        (when (not filter-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false filter-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += 1)
+        (while filter-stream.has-current
+          (mut! stats^.clause-candidates += 1)
+          (let [[head found] (mmap.get hop2-heads filter-stream.current.e)]
+            (when found
+              (let [index head]
+                (while (>= index 0)
+                  (append-source-multi-hop-ref-chain-link! (addr final-heads) (addr final-links) filter-stream.current.e (value-owned filter-stream.current.v) (value-owned hop2-links[index].first-value) true)
+                  (set! index hop2-links[index].next)))))
+          (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr filter-stream))]
+            (when (not advance-ok)
+              (delete-source-index-datom-stream filter-stream)
+              (delete attrs)
+              (delete-query-relation-builder builder)
+              (return (query-relation-empty) false advance-error))))
+        (delete-source-index-datom-stream filter-stream))
+      (let [[final-stream final-ok final-error] (source-index-datom-stream source projection.final-value-attr)]
+        (when (not final-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false final-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += 1)
+        (while final-stream.has-current
+          (mut! stats^.clause-candidates += 1)
+          (let [[head found] (mmap.get final-heads final-stream.current.e)]
+            (when found
+              (let [index head]
+                (while (>= index 0)
+                  (when (not (append-db-read-source-multi-hop-ref-chain-relation-row! (addr builder) (addr seen) query projection final-stream.current.v final-links[index].first-value final-links[index].filter-value))
+                    (delete-source-index-datom-stream final-stream)
+                    (delete attrs)
+                    (delete-query-relation-builder builder)
+                    (return (query-relation-empty) false "source multi-hop ref-chain final-filter relation could not add typed row"))
+                  (set! index final-links[index].next)))))
+          (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr final-stream))]
+            (when (not advance-ok)
+              (delete-source-index-datom-stream final-stream)
+              (delete attrs)
+              (delete-query-relation-builder builder)
+              (return (query-relation-empty) false advance-error))))
+        (delete-source-index-datom-stream final-stream))
+      (mut! stats^.clauses += 7)
+      (return (source-query-relation-from-multi-hop-builder attrs builder) true ""))))
+
+(defn db-read-source-query-relation-multi-hop-ref-chain-two-final-values-batched [source: DB-Read-Source, query: Query, projection: Source-Multi-Hop-Ref-Chain-Projection, inputs: []Query-Input, stats: ^Query-Stats] -> [rel: Query-Relation, ok: bool, error: string]
+  (when (db-read-source-has-overlay? source)
+    (return (query-relation-empty) false ""))
+  (let [attrs (arr.into [dynamic]string (slice query.find 0))
+        builder (query-relation-builder (slice attrs 0))
+        seen (set.empty string) :defer
+        [anchor-value anchor-value-ok anchor-value-error] (db-read-source-multi-hop-ref-chain-anchor-value source projection inputs)]
+    (when (not anchor-value-ok)
+      (delete attrs)
+      (delete-query-relation-builder builder)
+      (return (query-relation-empty) false anchor-value-error))
+    (let [anchor-entities (set.empty u64) :defer
+          anchor-entity-list (make [dynamic]u64) :defer
+          first-entities (set.empty u64) :defer
+          first-entity-list (make [dynamic]u64) :defer
+          hop1-entities (set.empty u64) :defer
+          hop1-entity-list (make [dynamic]u64) :defer
+          hop2-entities (set.empty u64) :defer
+          hop2-entity-list (make [dynamic]u64) :defer
+          final-entities (set.empty u64) :defer
+          final-entity-list (make [dynamic]u64) :defer
+          first-value-heads (make (map u64 int)) :defer
+          first-value-links (make [dynamic]Source-Multi-Hop-Ref-Chain-Link)
+          hop1-heads (make (map u64 int)) :defer
+          hop1-links (make [dynamic]Source-Multi-Hop-Ref-Chain-Link)
+          hop2-heads (make (map u64 int)) :defer
+          hop2-links (make [dynamic]Source-Multi-Hop-Ref-Chain-Link)
+          final-heads (make (map u64 int)) :defer
+          final-links (make [dynamic]Source-Multi-Hop-Ref-Chain-Link)]
+      (defer (delete-source-multi-hop-ref-chain-links first-value-links))
+      (defer (delete-source-multi-hop-ref-chain-links hop1-links))
+      (defer (delete-source-multi-hop-ref-chain-links hop2-links))
+      (defer (delete-source-multi-hop-ref-chain-links final-links))
+      (let [[anchor-stream anchor-ok anchor-error] (source-attr-value-match-stream source projection.anchor-attr anchor-value)]
+        (when (not anchor-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false anchor-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += 1)
+        (while anchor-stream.has-current
+          (let [anchor-datom (source-attr-value-match-current anchor-stream)]
+            (when (not (set.contains? anchor-entities anchor-datom.e))
+              (set.add! anchor-entities anchor-datom.e)
+              (arr.push! anchor-entity-list anchor-datom.e))
+            (mut! stats^.clause-candidates += 1))
+          (let [[anchor-advance-ok anchor-advance-error] (advance-source-attr-value-match-stream! source (addr anchor-stream))]
+            (when (not anchor-advance-ok)
+              (delete-source-attr-value-match-stream anchor-stream)
+              (delete attrs)
+              (delete-query-relation-builder builder)
+              (return (query-relation-empty) false anchor-advance-error))))
+        (delete-source-attr-value-match-stream anchor-stream))
+      (query-stats-observe-source-operator! stats)
+      (for [anchor-entity anchor-entity-list]
+        (mut! stats^.source-index-scans += 1)
+        (let [[reverse-stream reverse-ok reverse-error] (source-vaet-entity-attr-stream source anchor-entity projection.reverse-ref-attr)]
+          (when (not reverse-ok)
+            (delete attrs)
+            (delete-query-relation-builder builder)
+            (return (query-relation-empty) false reverse-error))
+          (while reverse-stream.has-current
+            (mut! stats^.clause-candidates += 1)
+            (let [first-entity reverse-stream.current.e
+                  already-seen (set.contains? first-entities first-entity)]
+              (when (not already-seen)
+                (set.add! first-entities first-entity)
+                (arr.push! first-entity-list first-entity)))
+            (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr reverse-stream))]
+              (when (not advance-ok)
+                (delete-source-index-datom-stream reverse-stream)
+                (delete attrs)
+                (delete-query-relation-builder builder)
+                (return (query-relation-empty) false advance-error))))
+          (delete-source-index-datom-stream reverse-stream)))
+      (let [[first-value-ok first-value-error first-value-scans first-value-candidates] (append-source-multi-hop-ref-chain-first-value-links-from-frontier! source projection.first-value-attr (slice first-entity-list 0) (addr first-value-heads) (addr first-value-links))]
+        (when (not first-value-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false first-value-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += first-value-scans)
+        (mut! stats^.clause-candidates += first-value-candidates))
+      (let [[hop1-ok hop1-error hop1-scans hop1-candidates] (append-source-multi-hop-ref-chain-reverse-propagated-links-from-frontier! source projection.hop1-attr (slice first-entity-list 0) (addr first-value-heads) (slice first-value-links 0) (addr hop1-entities) (addr hop1-entity-list) (addr hop1-heads) (addr hop1-links))]
+        (when (not hop1-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false hop1-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += hop1-scans)
+        (mut! stats^.clause-candidates += hop1-candidates))
+      (let [[hop2-ok hop2-error hop2-scans hop2-candidates] (append-source-multi-hop-ref-chain-reverse-propagated-links-from-frontier! source projection.hop2-attr (slice hop1-entity-list 0) (addr hop1-heads) (slice hop1-links 0) (addr hop2-entities) (addr hop2-entity-list) (addr hop2-heads) (addr hop2-links))]
+        (when (not hop2-ok)
+          (delete attrs)
+          (delete-query-relation-builder builder)
+          (return (query-relation-empty) false hop2-error))
+        (query-stats-observe-source-operator! stats)
+        (mut! stats^.source-index-scans += hop2-scans)
+        (mut! stats^.clause-candidates += hop2-candidates))
+      (query-stats-observe-source-operator! stats)
+      (for [final-entity hop2-entity-list]
+        (mut! stats^.source-index-scans += 1)
+        (let [[final-stream final-ok final-error] (source-eavt-entity-attr-stream source final-entity projection.final-value-attr)]
+          (when (not final-ok)
+            (delete attrs)
+            (delete-query-relation-builder builder)
+            (return (query-relation-empty) false final-error))
+          (while final-stream.has-current
+            (mut! stats^.clause-candidates += 1)
+            (let [[head found] (mmap.get hop2-heads final-stream.current.e)]
+              (when found
+                (let [already-seen (set.contains? final-entities final-stream.current.e)]
+                  (when (not already-seen)
+                    (set.add! final-entities final-stream.current.e)
+                    (arr.push! final-entity-list final-stream.current.e)))
+                (let [index head]
+                  (while (>= index 0)
+                    (append-source-multi-hop-ref-chain-link! (addr final-heads) (addr final-links) final-stream.current.e (value-owned final-stream.current.v) (value-owned hop2-links[index].first-value) true)
+                    (set! index hop2-links[index].next)))))
+            (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr final-stream))]
+              (when (not advance-ok)
+                (delete-source-index-datom-stream final-stream)
+                (delete attrs)
+                (delete-query-relation-builder builder)
+                (return (query-relation-empty) false advance-error))))
+          (delete-source-index-datom-stream final-stream)))
+      (query-stats-observe-source-operator! stats)
+      (for [final-entity final-entity-list]
+        (mut! stats^.source-index-scans += 1)
+        (let [[second-stream second-ok second-error] (source-eavt-entity-attr-stream source final-entity projection.filter-attr)]
+          (when (not second-ok)
+            (delete attrs)
+            (delete-query-relation-builder builder)
+            (return (query-relation-empty) false second-error))
+          (while second-stream.has-current
+            (mut! stats^.clause-candidates += 1)
+            (let [[head found] (mmap.get final-heads second-stream.current.e)]
+              (when found
+                (let [index head]
+                  (while (>= index 0)
+                    (when (not (append-db-read-source-multi-hop-ref-chain-relation-row! (addr builder) (addr seen) query projection final-links[index].filter-value final-links[index].first-value second-stream.current.v))
+                      (delete-source-index-datom-stream second-stream)
+                      (delete attrs)
+                      (delete-query-relation-builder builder)
+                      (return (query-relation-empty) false "source multi-hop ref-chain two-final-values relation could not add typed row"))
+                    (set! index final-links[index].next)))))
+            (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr second-stream))]
+              (when (not advance-ok)
+                (delete-source-index-datom-stream second-stream)
+                (delete attrs)
+                (delete-query-relation-builder builder)
+                (return (query-relation-empty) false advance-error))))
+          (delete-source-index-datom-stream second-stream)))
       (mut! stats^.clauses += 7)
       (return (source-query-relation-from-multi-hop-builder attrs builder) true ""))))
 

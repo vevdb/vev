@@ -77,46 +77,63 @@ Latest important performance status:
 - In-memory/native Vev performance remains strong.
 - Persistent Vev is still slower than local Datomic on the current
   MusicBrainz data-query rows.
-- The worst previous source-operator explosion has been reduced.
-- The no-overlay direct result path and query-stats/relation path now share a
-  generic batched multi-hop ref-chain operator for the supported forward-chain
-  shape. It scans each relevant attr stream once and propagates values through
-  maps instead of opening nested point streams for each intermediate entity.
-- Source rule calls now recognize a generic reverse-derived two-hop shape,
-  such as `[?middle :x ?left] [?right :y ?middle]`, and execute it as a typed
-  source relation instead of falling back to generic clause-by-clause rule
-  expansion.
-- Source fulltext function clauses now extend typed relations directly for
-  upstream shapes such as `[(fulltext $ :track/name ?q) [[?track ?name]]]`,
-  preserving the same row-pattern semantics as the existing binding path while
-  avoiding an explicit materialize-to-bindings round trip.
-- Seeded non-recursive rule calls can now project rule outputs while carrying
-  the seed/outer relation columns forward, avoiding a separate project-then-join
-  step when the rule body relation already contains those columns.
-- SQLite snapshot entity/attr point lookups now compare the indexed attr column
-  directly while probing an entity range, instead of deserializing a full datom
-  just to decide whether the attr matches. This is generic storage lookup work,
-  not a query-specific optimization.
-- Current no-Datomic comparison run has the direct Clojure MusicBrainz rows at
-  roughly: title-by-artist 176 ms, title/album/year-by-artist 471 ms,
-  pre-1970 title/album/year 171 ms, track-release rule 70 ms,
-  track-search-info 898 ms, collaboration 88 ms, collaboration-net-2
-  80 ms, nested collaboration 78 ms, and Bill Withers collaborations
-  90 ms.
-- Current local Datomic comparison matches row counts/fingerprints and reports
-  Vev slower on the covered persistent rows: roughly 3.3x slower for
-  title-by-artist, 11.1x for title/album/year, 21.0x for pre-1970
-  title/album/year, 3.0x for track-release rule, 3.5x for track-search-info,
-  7.3x/5.7x/11.2x for the collaboration rows, and 2.2x for Bill Withers
-  collaborations.
+- The comparison harness now supports `--workload <name-or-suffix>` so a single
+  upstream-derived MusicBrainz row can be validated through Kvist Vev and
+  compared through Clojure Vev and Datomic without running the full matrix.
+- The comparison harness now also supports `--query-stats`, which reruns the
+  selected Clojure Vev workload through `vev/query` with query stats enabled
+  and prints the same row count/fingerprint plus engine counters.
+- The comparison harness now supports `--warmup-runs N` and
+  `--measure-runs N`, reporting median measured time plus best/worst when more
+  than one run is measured. Use this for performance comparisons; single cold
+  first-use timings are still useful for startup work, but they should not be
+  treated as steady query throughput.
+- Current focused Datomic comparison for
+  `mbrainz-title-album-year-by-artist` matches row count and fingerprint
+  (93 rows, `d2548ca97497433f`). Kvist Vev validates the same selected
+  section.
+- The focused stats run for `mbrainz-title-album-year-by-artist` now uses a
+  generic no-filter reverse-chain source operator for this upstream data query
+  shape: 7 source operators, 325 bounded source-index streams, and 449 clause
+  candidates for 93 output rows, with no binding materialization. This replaces
+  the previous fallback path with 155 source operators and the first broad-scan
+  operator version with 223026 clause candidates.
+- The warmed steady comparison for `mbrainz-title-album-year-by-artist` is
+  correct but still too slow: with one warmup and five measured runs, local
+  Datomic measured about 4.3ms median and Vev Clojure about 31.3ms median.
+  The remaining bottleneck is persisted point-stream/page overhead, not join
+  cardinality.
+- Replacing the bounded value phases of this row with schema-cardinality-one
+  per-entity point lookups is the wrong physical direction for the persistent
+  store today: it keeps correctness but is much slower than the source-stream
+  path. Keep this row on source streams until persisted page reuse/batching is
+  improved.
+- Current focused Datomic comparison for
+  `mbrainz-pre-1970-title-album-year` matches row count and fingerprint
+  (18 rows, `4598839c2af58631`). Kvist Vev validates the same selected
+  section.
+- The focused stats run for `mbrainz-pre-1970-title-album-year` now uses the
+  generic ordered anchored reverse-chain source operator for this upstream data
+  query shape: 7 source operators/scans and 215078 clause candidates for 18
+  output rows, with no binding materialization. This replaces the previous 379
+  source operators/scans on the same row.
+- The first plain Clojure `d/q` call on
+  `mbrainz-pre-1970-title-album-year` is a cold first-use cost, not steady
+  query throughput: repeated measurement shows the first Vev call around
+  1.23s, then repeated plain `d/q` calls around 55-59ms in the same process.
+- The warmed steady comparison for `mbrainz-pre-1970-title-album-year` is
+  improved but still not good enough: with one warmup and five measured runs,
+  local Datomic measured about 3.6ms median, Vev Clojure about 26.4ms median,
+  and Vev stats/profiled about 57.7ms. Correctness matches, but this row still
+  needs generic source/storage throughput work.
 - Focused query-stats checks for the current target rows are correct:
   title/album/year-by-artist 93 rows, pre-1970 title/album/year 18 rows,
   track-search-info 92 rows. The `track-search-info` path now uses 6 source
   operators, 7 source-index scans, 2 data clauses, and no binding
   materialization in the focused stats run.
 - The remaining slow rows are now mostly about broader star/value joins,
-  persisted page reuse, rule composition around fulltext-produced seed
-  relations, and host/result materialization.
+  persisted page reuse, durable value/materialization reads, and host/result
+  materialization.
 
 ## Exit Criteria
 
@@ -142,6 +159,8 @@ This gate is done when:
 - `scripts/musicbrainz_workshop_clojure.sh`
 - `scripts/musicbrainz_workshop_kvist.sh`
 - `scripts/compare_musicbrainz_workshop.sh --skip-datomic`
+- `scripts/compare_musicbrainz_workshop.sh --workload <name-or-suffix>`
+- `scripts/compare_musicbrainz_workshop.sh --workload <name-or-suffix> --query-stats`
 - `scripts/compare_musicbrainz_workshop.sh` when local Datomic is available
 - `scripts/aggregates_tutorial_clojure.sh`
 - `scripts/aggregates_tutorial_kvist.sh`
@@ -163,6 +182,14 @@ This gate is done when:
 
    Done:
 
+   - add focused `--workload` filtering to the MusicBrainz workshop comparison
+     harness so slow upstream rows can be checked directly against Kvist Vev,
+     Clojure Vev, and Datomic
+   - add focused `--query-stats` reporting to the same comparison harness so
+     correctness, Datomic ratio, and Vev engine counters are available from one
+     selected upstream row
+   - add focused warmup/repeated measurement options to the same comparison
+     harness so cold first-use cost is separated from steady query throughput
    - add a generic batched/fused source operator for the no-overlay direct
      multi-hop ref/value-chain result path
    - route query-stats/request-map relation execution for the same supported
@@ -172,19 +199,53 @@ This gate is done when:
      rule or attribute names
    - keep fulltext rule function clauses in typed relation form for upstream
      source rules like `track-search`
+   - prefilter durable SQLite snapshot fulltext candidates with a generic
+     attr/string-contains storage query, then apply Vev's normal fulltext
+     matching/scoring
    - carry seed/outer columns through bounded non-recursive rule projections
      instead of always projecting rule outputs and joining them back
    - avoid full datom deserialization in SQLite snapshot entity/attr attr-name
      probes
+   - add a generic ordered anchored reverse-chain source operator for upstream
+     shapes like `mbrainz-pre-1970-title-album-year`, where a bound anchor
+     reaches a first entity through a reverse ref, carries a value on that
+     first entity, follows reverse ref hops to a final entity, applies a range
+     predicate on the final entity, and projects another final-entity value
+   - add a generic Clojure typed-column result conversion path for
+     `string,string,int` triples and route non-prepared relation `q` calls
+     through set-shaped typed-column output instead of row materialization plus
+     post-conversion
+   - batch the final projected value read inside the ordered anchored
+     reverse-chain source operator by carrying filtered final-entity links and
+     scanning the final-value attribute once, rather than performing a
+     persisted entity/attr lookup for each filtered link
+   - add a generic no-filter two-final-value reverse-chain source operator for
+     shapes like `mbrainz-title-album-year-by-artist`
+   - make that operator drive reverse refs and final value lookups from the
+     bounded reachable frontier, reducing the focused row from 223026 broad
+     scan candidates to 449 real candidates
+   - skip persisted current-check work inside cardinality-one value lookup for
+     SQLite snapshots with no retractions; this is a generic lookup cleanup,
+     but it is not enough to make per-entity point lookups the right plan for
+     the current MusicBrainz row
 
    Next useful engine work:
 
-   - improve remaining rule composition after fulltext-produced seed
-     relations, especially the `track-info` expansion after `track-search`,
-     so downstream data clauses feed more batched operators and do less
-     row-by-row persisted lookup work
-   - add a sound generic operator for broader reverse component/ref chains and
-     star-shaped joins without changing join cardinality
+   - reduce persisted point-stream overhead for bounded reverse-chain
+     operators; `mbrainz-title-album-year-by-artist` now has the right
+     cardinality but still performs 325 small SQLite-backed index streams
+   - add reusable persisted page/range batching for the bounded stream path;
+     do not replace these source streams with row-by-row cardinality-one point
+     lookups unless measurement shows it wins for persistent stores
+   - reduce warmed steady runtime for `mbrainz-pre-1970-title-album-year`;
+     after the typed-column host materialization fix and final-value batching,
+     this is now about 26.4ms
+     median for Vev Clojure versus about 3.6ms median for local Datomic with
+     the same warmup/repeat settings
+   - improve the generic relation planner for broader reverse component/ref
+     chains and star-shaped joins without changing join cardinality
+   - batch durable value-column reads for broad value/filter joins such as the
+     pre-1970 rows, instead of repeated row-by-row persisted lookups
    - reuse loaded persisted pages across neighboring point/range operators
    - reduce host/result materialization cost for typed source-column results
    - keep all fixes keyed by query shape and indexes, not by attribute names or
