@@ -174,18 +174,56 @@ Important performance signal:
   while broad inputs keep the merge-scan path, which makes the upstream
   `track-search` plus `track-info` MusicBrainz query viable against the
   persistent store.
+- source-backed bound entity/cardinality-one joins now prefer the existing
+  sorted merge operator for larger typed relations before falling back to
+  per-row point lookups. This reduces repeated persisted source operators in
+  the current MusicBrainz data-query rows: the remaining album/year rows drop
+  from roughly `527` source index scans to `155`, `track-search-info` drops
+  from roughly `570` to `192`, and the Bill Withers self-join drops from
+  roughly `220` to `33`.
+- source-backed value-bound joins choose between AVET merge scans and exact
+  per-value AVET ranges using a simple generic persisted-cost model: broad
+  merge scans are tried first only when the persisted attribute range is small
+  enough relative to the typed input relation. This keeps the efficient
+  merge-path for broad joins while avoiding full-attribute scans for selective
+  MusicBrainz chains. Correctness still matches local Datomic, and the focused
+  query-stats rows now show low source-operator/candidate counts, for example
+  `pre-1970-track-titles` at `6` source operators and `82` candidates. Elapsed
+  time is still slower than local Datomic, so the remaining bottleneck is now
+  persisted point/range read cost and row/result materialization behind those
+  operators. Selective exact AVET value joins now run through the shared
+  `Source-Index-Datom-Stream` path instead of open-coded per-entry index view
+  loads, so future persisted page/log-row optimizations can improve both exact
+  and merge source operators through one stream abstraction. SQLite snapshot
+  streams also skip per-entry current/retraction checks when the snapshot
+  metadata says there are no retractions, matching the existing non-run stream
+  fast path. Retained-page run-range streams now borrow the current datom from
+  the loaded SQLite index page instead of cloning/deleting an owned datom per
+  stream step, and ordinary no-retraction SQLite cursor streams use the same
+  borrowed-current shape from their loaded cursor page. The generic
+  source-clause stream wrapper now also borrows current datoms from the
+  underlying source/index stream where possible, and ordinary no-retraction
+  SQLite clause scans borrow from the loaded cursor page instead of cloning a
+  datom per candidate. Source-column result renderers now move owned strings
+  from typed column buffers into result rows instead of cloning them during
+  result materialization. The next remaining cost is persisted row decode/page
+  reuse around point/range reads; the current comparison gate still matches
+  Datomic rows/fingerprints but Vev remains slower on the persisted
+  MusicBrainz data-query rows.
 - the upstream `collab` query over a collection input and `%` rules now works
   from both Clojure and Kvist against the persistent MusicBrainz store. The
   Clojure request-map timeout validation uses a tighter timeout than the
   upstream prose because Vev often completes the original `100` ms example
   before it can demonstrate timeout behavior.
-- the upstream `collab-net-2` query and the nested recursive `d/q` `collab`
-  query now work from both Clojure and Kvist. This added generic
-  source-backed rule operators for attr-parameter same-entity pair relations
-  and two-hop self-join relations, and the EDN/query input parser accepts
-  relation row collections represented as sets as well as vectors. That lets a
-  Clojure `d/q` relation result feed directly into the next `d/q` relation
-  input.
+- the upstream `collab`, `collab-net-2`, and nested recursive `d/q` `collab`
+  queries now work from both Clojure and Kvist without broad same-entity
+  relation materialization. Generic bounded source-backed rule operators use
+  incoming relation bindings for attr-parameter same-entity pair rules and
+  derived two-hop self-join rules. Current profiling shows the broad
+  collaboration candidates reduced from roughly `101k` to under `1k` for the
+  active upstream rows. The EDN/query input parser also accepts relation row
+  collections represented as sets as well as vectors, so a Clojure `d/q`
+  relation result can feed directly into the next `d/q` relation input.
 - the upstream Bill Withers collaboration self-join query now works from both
   Clojure and Kvist against the persistent MusicBrainz store. It exercises
   inequality predicates over literals and vars, repeated track-name joins, and
@@ -451,15 +489,28 @@ internals:
 
    Current priority:
 
-   - use request-map `:query-stats true` on the exact ported
-     `mbrainz-sample` rows to inspect the generic physical planner and
-     persisted index path, starting with `mbrainz-collab-nested`,
-     `mbrainz-pre-1970-title-album-year`, `mbrainz-collab`, and
-     `mbrainz-collab-net-2`
-   - look for broad persisted scans, repeated per-row store fetches, rule
-     relation materialization, or excess source-operator invocations where the
-     same query shape can use existing source indexes or typed relation
-     operators
+   - use request-map `:query-stats true` and the Datomic comparison harness on
+     the exact ported `mbrainz-sample` rows. The most important current targets
+     remain `mbrainz-title-album-year-by-artist`,
+     `mbrainz-pre-1970-title-album-year`, `mbrainz-track-release-rule`, and
+     `mbrainz-track-search-info`.
+   - the next concrete bottleneck is persisted point/range read cost and
+     row/result materialization inside the remaining small number of source
+     operators. The active rows now avoid the worst source-operator explosion
+     and broad AVET scans; they are still slower because each generic operator
+     does too much persisted cursor/page/log-row work for the amount of output
+     produced. Exact AVET joins use the shared persisted stream path, and that
+     stream now borrows datoms from retained SQLite pages instead of cloning an
+     owned datom for every run-range row; ordinary no-retraction SQLite cursor
+     streams also borrow from their loaded cursor page. The next fix should
+     keep lowering stream/page and result materialization cost rather than
+     adding another query-specific operator variant. Remaining cost is
+     primarily loading/decoding persisted datom rows, reusing loaded pages
+     across neighboring operators, and materializing host/query result values.
+   - look for reusable typed/source operator paths that can batch adjacent
+     exact ranges, reuse loaded persisted pages across neighboring point/range
+     reads, or fuse adjacent ref/value joins without hard-coding MusicBrainz
+     attribute names.
    - keep fixes generic to Datalog rule/join/index execution, not keyed to
      exact MusicBrainz query strings
 

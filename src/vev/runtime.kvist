@@ -9227,6 +9227,92 @@
                              typed-rows: typed-rows
                              has-typed-columns: true}) true "")))
 
+(defn db-read-source-append-bound-attr-param-same-entity-value! [source: DB-Read-Source, columns: ^[dynamic]Relation-Column, rows: ^int, seen: ^set[string], attr: string, bound-left: bool, bound-value: Value, maybe-other-bound: Value, has-other-bound: bool, stats: ^Query-Stats] -> [ok: bool, error: string]
+  (let [matching (make [dynamic]Datom)]
+    (defer (delete-owned-datoms matching))
+    (let [[scan-ok scan-error] (db-read-source-append-attr-value-datoms! (addr matching) source attr bound-value)]
+      (when (not scan-ok)
+        (return false scan-error)))
+    (mut! stats^.source-index-scans += 1)
+    (mut! stats^.clause-candidates += (count matching))
+    (for [match matching]
+      (let [[siblings siblings-ok siblings-error] (db-read-source-datoms-by-entity-attr source match.e attr)]
+        (when (not siblings-ok)
+          (return false siblings-error))
+        (mut! stats^.source-index-scans += 1)
+        (mut! stats^.clause-candidates += (count siblings))
+        (for [sibling siblings]
+          (when (not (predicate-value-equal? sibling.v bound-value))
+            (when (or (not has-other-bound)
+                      (predicate-value-equal? sibling.v maybe-other-bound))
+              (let [left-value (if bound-left bound-value sibling.v)
+                    right-value (if bound-left sibling.v bound-value)]
+                (when (not (append-attr-param-two-values-row! columns rows seen attr left-value right-value))
+                  (delete-owned-datoms siblings)
+                  (return false "failed to build bounded attr-param same-entity rule relation"))))))
+        (delete-owned-datoms siblings))))
+  (return true ""))
+
+(defn db-read-source-query-relation-from-bound-attr-param-two-values-same-entity-rule [source: DB-Read-Source, rel: Query-Relation, rule: Rule, call: Rule-Call, attr: string, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool, error: string]
+  (when (not rel.has-typed-columns)
+    (return (query-relation-empty) false ""))
+  (let [left-bound false
+        right-bound false
+        attrs ([dynamic]string [rule.params[0] rule.params[1] rule.params[2]])
+        attr-sources ([dynamic]string ["" "" ""])
+        columns (relation-columns-for-attrs (slice attrs 0))
+        typed-rows 0
+        seen (set.empty string)
+        row 0]
+    (when (= call.args[1].kind .Var)
+      (let [[_ index-ok] (query-relation-attr-index-lookup rel call.args[1].name)]
+        (set! left-bound index-ok)))
+    (when (= call.args[2].kind .Var)
+      (let [[_ index-ok] (query-relation-attr-index-lookup rel call.args[2].name)]
+        (set! right-bound index-ok)))
+    (when (not (or left-bound right-bound))
+      (delete-relation-columns columns)
+      (delete attrs)
+      (delete attr-sources)
+      (return (query-relation-empty) false ""))
+    (defer (delete seen))
+    (while (< row rel.typed-rows)
+      (let [left-value (Value {})
+            left-ok false
+            right-value (Value {})
+            right-ok false]
+        (when (and (= call.args[1].kind .Var) left-bound)
+          (let [[value value-ok] (query-relation-typed-row-value rel row call.args[1].name)]
+            (set! left-value value)
+            (set! left-ok value-ok)))
+        (when (and (= call.args[2].kind .Var) right-bound)
+          (let [[value value-ok] (query-relation-typed-row-value rel row call.args[2].name)]
+            (set! right-value value)
+            (set! right-ok value-ok)))
+        (if left-ok
+          (let [[append-ok append-error] (db-read-source-append-bound-attr-param-same-entity-value! source (addr columns) (addr typed-rows) (addr seen) attr true left-value right-value right-ok stats)]
+            (when (not append-ok)
+              (delete-relation-columns columns)
+              (delete attrs)
+              (delete attr-sources)
+              (return (query-relation-empty) false append-error)))
+          (when right-ok
+            (let [[append-ok append-error] (db-read-source-append-bound-attr-param-same-entity-value! source (addr columns) (addr typed-rows) (addr seen) attr false right-value left-value left-ok stats)]
+              (when (not append-ok)
+                (delete-relation-columns columns)
+                (delete attrs)
+                (delete attr-sources)
+                (return (query-relation-empty) false append-error))))))
+      (set! row (+ row 1)))
+    (query-stats-observe-source-operator! stats)
+    (return (Query-Relation {attrs: attrs
+                             attr-sources: attr-sources
+                             attr-index: (query-relation-attr-index (slice attrs 0))
+                             tuples: (make [dynamic]Binding)
+                             typed-columns: columns
+                             typed-rows: typed-rows
+                             has-typed-columns: true}) true "")))
+
 (defn rule-call-arg-var-name? [call: Rule-Call, index: int, name: string] -> bool
   (and (< index (count call.args))
        (term-var-name? call.args[index] name)))
@@ -9406,6 +9492,161 @@
         (delete-query-relation base-rel)
         (delete-owned-values-array left-values)
         (delete-owned-values-array right-values)
+        (let [derived-rel (Query-Relation {attrs: attrs
+                                           attr-sources: attr-sources
+                                           attr-index: (query-relation-attr-index (slice attrs 0))
+                                           tuples: (make [dynamic]Binding)
+                                           typed-columns: columns
+                                           typed-rows: rows
+                                           has-typed-columns: true})
+              [projected projected-ok] (query-relation-project-rule-call-params-typed derived-rel (slice direct-rule.params 0) call)]
+          (delete-query-relation derived-rel)
+          (return projected projected-ok ""))))))
+
+(defn db-read-source-query-relation-from-bound-two-hop-attr-param-rule-call [source: DB-Read-Source, rel: Query-Relation, rules: []Rule, call: Rule-Call, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool, error: string]
+  (when (not (and rel.has-typed-columns
+                  (= (count call.args) 3)
+                  (= call.args[0].kind .Value)
+                  (= call.args[0].value.kind .Keyword)))
+    (return (query-relation-empty) false ""))
+  (let [[direct-rule _ base-rule shape-ok] (two-hop-attr-param-derived-rule-shape rules call.name)]
+    (when (not shape-ok)
+      (return (query-relation-empty) false ""))
+    (let [left-bound false
+          right-bound false]
+      (when (= call.args[1].kind .Var)
+        (let [[_ index-ok] (query-relation-attr-index-lookup rel call.args[1].name)]
+          (set! left-bound index-ok)))
+      (when (= call.args[2].kind .Var)
+        (let [[_ index-ok] (query-relation-attr-index-lookup rel call.args[2].name)]
+          (set! right-bound index-ok)))
+      (when (not (or left-bound right-bound))
+        (return (query-relation-empty) false ""))
+      (let [attr call.args[0].value.text
+            attrs ([dynamic]string [direct-rule.params[0] direct-rule.params[1] direct-rule.params[2]])
+            attr-sources ([dynamic]string ["" "" ""])
+            columns (relation-columns-for-attrs (slice attrs 0))
+            rows 0
+            seen (set.empty string)
+            row 0]
+        (defer (delete seen))
+        (while (< row rel.typed-rows)
+          (let [left-value (Value {})
+                left-ok false
+                right-value (Value {})
+                right-ok false]
+            (when (and (= call.args[1].kind .Var) left-bound)
+              (let [[value value-ok] (query-relation-typed-row-value rel row call.args[1].name)]
+                (set! left-value value)
+                (set! left-ok value-ok)))
+            (when (and (= call.args[2].kind .Var) right-bound)
+              (let [[value value-ok] (query-relation-typed-row-value rel row call.args[2].name)]
+                (set! right-value value)
+                (set! right-ok value-ok)))
+            (when left-ok
+              (let [first-columns (relation-columns-for-attrs (slice attrs 0))
+                    first-rows 0
+                    first-seen (set.empty string)
+                    [first-ok first-error] (db-read-source-append-bound-attr-param-same-entity-value! source (addr first-columns) (addr first-rows) (addr first-seen) attr true left-value (Value {}) false stats)]
+                (delete first-seen)
+                (when (not first-ok)
+                  (delete-relation-columns first-columns)
+                  (delete-relation-columns columns)
+                  (delete attrs)
+                  (delete attr-sources)
+                  (return (query-relation-empty) false first-error))
+                (let [first-row 0]
+                  (while (< first-row first-rows)
+                    (let [[middle-value middle-ok] (typed-relation-column-value first-columns[2] first-row)]
+                      (when middle-ok
+                        (when (or (not right-ok)
+                                  (predicate-value-equal? middle-value right-value))
+                          (when (not (append-attr-param-three-value-row! (addr columns) (addr rows) (addr seen) attr left-value middle-value))
+                            (delete-relation-columns first-columns)
+                            (delete-relation-columns columns)
+                            (delete attrs)
+                            (delete attr-sources)
+                            (return (query-relation-empty) false "failed to build bounded two-hop attr-param relation")))
+                        (let [second-columns (relation-columns-for-attrs (slice attrs 0))
+                              second-rows 0
+                              second-seen (set.empty string)
+                              [second-ok second-error] (db-read-source-append-bound-attr-param-same-entity-value! source (addr second-columns) (addr second-rows) (addr second-seen) attr true middle-value right-value right-ok stats)]
+                          (delete second-seen)
+                          (when (not second-ok)
+                            (delete-relation-columns second-columns)
+                            (delete-relation-columns first-columns)
+                            (delete-relation-columns columns)
+                            (delete attrs)
+                            (delete attr-sources)
+                            (return (query-relation-empty) false second-error))
+                          (let [second-row 0]
+                            (while (< second-row second-rows)
+                              (let [[candidate-value candidate-ok] (typed-relation-column-value second-columns[2] second-row)]
+                                (when (and candidate-ok
+                                           (not (predicate-value-equal? left-value candidate-value)))
+                                  (when (not (append-attr-param-three-value-row! (addr columns) (addr rows) (addr seen) attr left-value candidate-value))
+                                    (delete-relation-columns second-columns)
+                                    (delete-relation-columns first-columns)
+                                    (delete-relation-columns columns)
+                                    (delete attrs)
+                                    (delete attr-sources)
+                                    (return (query-relation-empty) false "failed to build bounded two-hop attr-param relation"))))
+                              (set! second-row (+ second-row 1))))
+                          (delete-relation-columns second-columns))))
+                    (set! first-row (+ first-row 1))))
+                (delete-relation-columns first-columns)))
+            (when (and right-ok (not left-ok))
+              (let [first-columns (relation-columns-for-attrs (slice attrs 0))
+                    first-rows 0
+                    first-seen (set.empty string)
+                    [first-ok first-error] (db-read-source-append-bound-attr-param-same-entity-value! source (addr first-columns) (addr first-rows) (addr first-seen) attr false right-value (Value {}) false stats)]
+                (delete first-seen)
+                (when (not first-ok)
+                  (delete-relation-columns first-columns)
+                  (delete-relation-columns columns)
+                  (delete attrs)
+                  (delete attr-sources)
+                  (return (query-relation-empty) false first-error))
+                (let [first-row 0]
+                  (while (< first-row first-rows)
+                    (let [[middle-value middle-ok] (typed-relation-column-value first-columns[1] first-row)]
+                      (when middle-ok
+                        (when (not (append-attr-param-three-value-row! (addr columns) (addr rows) (addr seen) attr middle-value right-value))
+                          (delete-relation-columns first-columns)
+                          (delete-relation-columns columns)
+                          (delete attrs)
+                          (delete attr-sources)
+                          (return (query-relation-empty) false "failed to build bounded two-hop attr-param relation"))
+                        (let [second-columns (relation-columns-for-attrs (slice attrs 0))
+                              second-rows 0
+                              second-seen (set.empty string)
+                              [second-ok second-error] (db-read-source-append-bound-attr-param-same-entity-value! source (addr second-columns) (addr second-rows) (addr second-seen) attr false middle-value (Value {}) false stats)]
+                          (delete second-seen)
+                          (when (not second-ok)
+                            (delete-relation-columns second-columns)
+                            (delete-relation-columns first-columns)
+                            (delete-relation-columns columns)
+                            (delete attrs)
+                            (delete attr-sources)
+                            (return (query-relation-empty) false second-error))
+                          (let [second-row 0]
+                            (while (< second-row second-rows)
+                              (let [[candidate-value candidate-ok] (typed-relation-column-value second-columns[1] second-row)]
+                                (when (and candidate-ok
+                                           (not (predicate-value-equal? candidate-value right-value)))
+                                  (when (not (append-attr-param-three-value-row! (addr columns) (addr rows) (addr seen) attr candidate-value right-value))
+                                    (delete-relation-columns second-columns)
+                                    (delete-relation-columns first-columns)
+                                    (delete-relation-columns columns)
+                                    (delete attrs)
+                                    (delete attr-sources)
+                                    (return (query-relation-empty) false "failed to build bounded two-hop attr-param relation"))))
+                              (set! second-row (+ second-row 1))))
+                          (delete-relation-columns second-columns))))
+                    (set! first-row (+ first-row 1))))
+                (delete-relation-columns first-columns))))
+          (set! row (+ row 1)))
+        (query-stats-observe-source-operator! stats)
         (let [derived-rel (Query-Relation {attrs: attrs
                                            attr-sources: attr-sources
                                            attr-index: (query-relation-attr-index (slice attrs 0))
@@ -10634,8 +10875,8 @@
                           (= (index-position-compare row-refs[ref-index].value row-refs[group-start].value) 0))
                 (set! ref-index (+ ref-index 1)))
               (let [values ([]Value [(value-keyword attr) row-refs[group-start].value])
-                    [view low high range-ok range-error] (db-read-source-prefix-index-range source .AVET values)]
-                (when (not range-ok)
+                    [stream stream-ok stream-error] (source-index-datom-stream-for-values source .AVET values)]
+                (when (not stream-ok)
                   (delete-value-relation-row-refs row-refs)
                   (delete attrs)
                   (delete attr-sources)
@@ -10643,56 +10884,47 @@
                   (return (query-relation-empty) false))
                 (set! stats^.source-index-scans (+ stats^.source-index-scans 1))
                 (query-stats-observe-source-operator! stats)
-                (for [pos (arr.range low high)]
-                  (let [entry (db-index-view-at view pos)
-                        [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
-                    (when (not current-ok)
+                (while stream.has-current
+                  (let [scan (Clause-Index-Scan {view: (db-read-source-index-view source .AVET)
+                                                 index: 0
+                                                 high: 1
+                                                 e-value: (Value {})
+                                                 e-ok: false
+                                                 a-value: source-clause.a.value
+                                                 a-ok: true
+                                                 v-value: row-refs[group-start].value
+                                                 v-ok: true
+                                                 reverse-attr: false
+                                                 forward-attr: ""})
+                        row-ref-index group-start]
+                    (while (< row-ref-index ref-index)
+                      (set! stats^.clause-candidates (+ stats^.clause-candidates 1))
+                      (let [source-row row-refs[row-ref-index].row]
+                        (if (db-read-source-bind-join-adds-single-entity-var? rel source-clause)
+                          (when (not (db-read-source-append-bind-join-single-entity-var-row! (addr builder) (slice attrs 0) rel source-row source-clause stream.current op))
+                            (delete-source-index-datom-stream stream)
+                            (delete-value-relation-row-refs row-refs)
+                            (delete attrs)
+                            (delete attr-sources)
+                            (delete-query-relation-builder builder)
+                            (return (query-relation-empty) false))
+                          (when (not (db-read-source-add-primary-clause-datom-typed-with-op! source (addr builder) (slice attrs 0) rel source-row (Binding {}) scan source-clause stream.current true op))
+                            (delete-source-index-datom-stream stream)
+                            (delete-value-relation-row-refs row-refs)
+                            (delete attrs)
+                            (delete attr-sources)
+                            (delete-query-relation-builder builder)
+                            (return (query-relation-empty) false))))
+                      (set! row-ref-index (+ row-ref-index 1))))
+                  (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr stream))]
+                    (when (not advance-ok)
+                      (delete-source-index-datom-stream stream)
                       (delete-value-relation-row-refs row-refs)
                       (delete attrs)
                       (delete attr-sources)
                       (delete-query-relation-builder builder)
-                      (return (query-relation-empty) false))
-                    (when (not current)
-                      (continue))
-                    (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
-                      (when (not datom-ok)
-                        (delete-value-relation-row-refs row-refs)
-                        (delete attrs)
-                        (delete attr-sources)
-                        (delete-query-relation-builder builder)
-                        (return (query-relation-empty) false))
-                      (let [scan (Clause-Index-Scan {view: (db-read-source-index-view source .AVET)
-                                                     index: 0
-                                                     high: 1
-                                                     e-value: (Value {})
-                                                     e-ok: false
-                                                     a-value: source-clause.a.value
-                                                     a-ok: true
-                                                     v-value: row-refs[group-start].value
-                                                     v-ok: true
-                                                     reverse-attr: false
-                                                     forward-attr: ""})
-                            row-ref-index group-start]
-                        (while (< row-ref-index ref-index)
-                          (set! stats^.clause-candidates (+ stats^.clause-candidates 1))
-                          (let [source-row row-refs[row-ref-index].row]
-                            (if (db-read-source-bind-join-adds-single-entity-var? rel source-clause)
-                              (when (not (db-read-source-append-bind-join-single-entity-var-row! (addr builder) (slice attrs 0) rel source-row source-clause datom op))
-                                (delete-owned-datom datom)
-                                (delete-value-relation-row-refs row-refs)
-                                (delete attrs)
-                                (delete attr-sources)
-                                (delete-query-relation-builder builder)
-                                (return (query-relation-empty) false))
-                              (when (not (db-read-source-add-primary-clause-datom-typed-with-op! source (addr builder) (slice attrs 0) rel source-row (Binding {}) scan source-clause datom true op))
-                                (delete-owned-datom datom)
-                                (delete-value-relation-row-refs row-refs)
-                                (delete attrs)
-                                (delete attr-sources)
-                                (delete-query-relation-builder builder)
-                                (return (query-relation-empty) false))))
-                          (set! row-ref-index (+ row-ref-index 1))))
-                      (delete-owned-datom datom)))))))
+                      (return (query-relation-empty) false))))
+                (delete-source-index-datom-stream stream))))
           (delete-value-relation-row-refs row-refs)
           (return (Query-Relation {attrs: attrs
                                    attr-sources: attr-sources
@@ -10809,28 +11041,61 @@
                                    typed-rows: builder.typed-rows
                                    has-typed-columns: builder.typed-ok}) true))))))
 
+(defn db-read-source-avet-value-merge-before-exact? [source: DB-Read-Source, rel: Query-Relation, clause-value: Clause, op: Physical-Op] -> [prefer: bool, ok: bool]
+  (let [[supported supported-error] (db-read-source-bind-join-avet-value-supported? source rel clause-value op)]
+    (when (not (= supported-error ""))
+      (return false false))
+    (when (not supported)
+      (return false false)))
+  (let [source-clause (if clause-value.has-source
+                        (unsourced-clause clause-value)
+                        clause-value)
+        [entry-count entry-ok _entry-error] (db-read-source-attr-range-entry-count source source-clause.a.value.text)]
+    (when (not entry-ok)
+      (return false false))
+    (return (<= entry-count (* rel.typed-rows 8)) true)))
+
 (defn db-read-source-query-relation-apply-primary-clause-typed-with-op [source: DB-Read-Source, rel: Query-Relation, clause-value: Clause, op: Physical-Op, stats: ^Query-Stats] -> [out: Query-Relation, ok: bool]
   (when (or (not rel.has-typed-columns)
             (not (db-read-source-primary-source? clause-value.has-source clause-value.source)))
     (return (query-relation-empty) false))
   (when (= source.kind .Relation-Value)
     (return (db-read-source-query-relation-apply-primary-relation-value-clause-with-op source rel clause-value op stats)))
+  (when (> rel.typed-rows 16)
+    (let [[bound-join-merge bound-join-merge-ok] (db-read-source-query-relation-apply-bind-join-eavt-cardinality-one-merge source rel clause-value op stats)]
+      (when bound-join-merge-ok
+        (return bound-join-merge true))
+      (delete-query-relation bound-join-merge)))
   (let [[bound-join bound-join-ok] (db-read-source-query-relation-apply-bind-join-eavt-cardinality-one source rel clause-value op stats)]
     (when bound-join-ok
       (return bound-join true))
     (delete-query-relation bound-join))
-  (let [[bound-join-merge bound-join-merge-ok] (db-read-source-query-relation-apply-bind-join-eavt-cardinality-one-merge source rel clause-value op stats)]
-    (when bound-join-merge-ok
-      (return bound-join-merge true))
-    (delete-query-relation bound-join-merge))
+  (when (<= rel.typed-rows 16)
+    (let [[bound-join-merge bound-join-merge-ok] (db-read-source-query-relation-apply-bind-join-eavt-cardinality-one-merge source rel clause-value op stats)]
+      (when bound-join-merge-ok
+        (return bound-join-merge true))
+      (delete-query-relation bound-join-merge)))
+  (let [[prefer-bound-value-merge prefer-bound-value-merge-ok] (db-read-source-avet-value-merge-before-exact? source rel clause-value op)]
+    (when (and prefer-bound-value-merge-ok prefer-bound-value-merge)
+      (let [[bound-value-merge bound-value-merge-ok] (db-read-source-query-relation-apply-bind-join-avet-value-merge source rel clause-value op stats)]
+        (when bound-value-merge-ok
+          (return bound-value-merge true))
+        (delete-query-relation bound-value-merge))))
   (let [[bound-value-exact bound-value-exact-ok] (db-read-source-query-relation-apply-bind-join-avet-value-exact-ranges source rel clause-value op stats)]
     (when bound-value-exact-ok
       (return bound-value-exact true))
     (delete-query-relation bound-value-exact))
-  (let [[bound-value-merge bound-value-merge-ok] (db-read-source-query-relation-apply-bind-join-avet-value-merge source rel clause-value op stats)]
-    (when bound-value-merge-ok
-      (return bound-value-merge true))
-    (delete-query-relation bound-value-merge))
+  (let [[prefer-bound-value-merge prefer-bound-value-merge-ok] (db-read-source-avet-value-merge-before-exact? source rel clause-value op)]
+    (when (and prefer-bound-value-merge-ok (not prefer-bound-value-merge))
+      (let [[bound-value-merge bound-value-merge-ok] (db-read-source-query-relation-apply-bind-join-avet-value-merge source rel clause-value op stats)]
+        (when bound-value-merge-ok
+          (return bound-value-merge true))
+        (delete-query-relation bound-value-merge))))
+  (when (not (> rel.typed-rows 16))
+    (let [[bound-value-merge bound-value-merge-ok] (db-read-source-query-relation-apply-bind-join-avet-value-merge source rel clause-value op stats)]
+      (when bound-value-merge-ok
+        (return bound-value-merge true))
+      (delete-query-relation bound-value-merge)))
   (let [source-clause (if clause-value.has-source
                         (unsourced-clause clause-value)
                         clause-value)
@@ -11774,6 +12039,33 @@
               (return (query-relation-empty) false))
             (let [[attr-param attr-param-ok] (rule-attr-param-two-values-same-entity rule local-call)]
               (when attr-param-ok
+                (let [[bounded-rel bounded-ok bounded-error] (db-read-source-query-relation-from-bound-attr-param-two-values-same-entity-rule call-source rel rule local-call attr-param stats)]
+                  (when (not (= bounded-error ""))
+                    (delete-query-relation seed)
+                    (delete-query-relation bounded-rel)
+                    (when has-rule-rel
+                      (delete-query-relation rule-rel))
+                    (return (query-relation-empty) false))
+                  (when bounded-ok
+                    (delete-query-relation seed)
+                    (let [[projected projected-ok] (query-relation-project-rule-call-params-typed bounded-rel (slice rule.params 0) local-call)]
+                      (delete-query-relation bounded-rel)
+                      (when (not projected-ok)
+                        (delete-query-relation projected)
+                        (when has-rule-rel
+                          (delete-query-relation rule-rel))
+                        (return (query-relation-empty) false))
+                      (when (not has-rule-rel)
+                        (delete-query-relation rule-rel)
+                        (set! rule-rel (query-relation-empty-typed-like projected))
+                        (set! has-rule-rel true))
+                      (when (not (query-relation-append-typed-rows-unique! (addr rule-rel) projected (addr seen)))
+                        (delete-query-relation projected)
+                        (delete-query-relation rule-rel)
+                        (return (query-relation-empty) false))
+                      (delete-query-relation projected)
+                      (continue)))
+                  (delete-query-relation bounded-rel))
                 (let [[attr-param-rel attr-param-built attr-param-error] (db-read-source-query-relation-from-attr-param-two-values-same-entity-rule call-source rule attr-param stats)]
                   (delete-query-relation seed)
                   (when (not (= attr-param-error ""))
@@ -11830,16 +12122,29 @@
             deduped (query-relation-dedupe-step joined)]
         (delete-query-relation rule-rel)
         (delete-query-relation joined)
-        (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+        (mut! stats^.rule-iterations += 1)
         (query-stats-observe-bindings! stats (query-relation-row-count deduped))
         (return deduped deduped.has-typed-columns))))))
 
 (defn db-read-source-query-relation-apply-rule-call-typed-depth [source: DB-Read-Source, sources: []DB-Read-Named-Source, rules: []Rule, rel: Query-Relation, call: Rule-Call, registry: []Native-Query-Fn, stats: ^Query-Stats, depth: int] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
-  (set! stats^.rule-calls (+ stats^.rule-calls 1))
+  (mut! stats^.rule-calls += 1)
   (let [[call-source local-call source-ok] (db-read-source-resolve-rule-call-source source sources call)]
     (when source-ok
+      (let [[bounded-two-hop bounded-two-hop-ok bounded-two-hop-error] (db-read-source-query-relation-from-bound-two-hop-attr-param-rule-call call-source rel rules local-call stats)]
+        (when (not (= bounded-two-hop-error ""))
+          (delete-query-relation bounded-two-hop)
+          (return (query-relation-empty) false))
+        (when bounded-two-hop-ok
+          (let [joined (query-relation-join (DB {}) ([]DB-Source []) rel bounded-two-hop)
+                deduped (query-relation-dedupe-step joined)]
+            (delete-query-relation bounded-two-hop)
+            (delete-query-relation joined)
+            (mut! stats^.rule-iterations += 1)
+            (query-stats-observe-bindings! stats (query-relation-row-count deduped))
+            (return deduped deduped.has-typed-columns)))
+        (delete-query-relation bounded-two-hop))
       (let [[two-hop two-hop-ok two-hop-error] (db-read-source-query-relation-from-two-hop-attr-param-rule-call call-source rules local-call stats)]
         (when (not (= two-hop-error ""))
           (delete-query-relation two-hop)
@@ -11849,7 +12154,7 @@
                 deduped (query-relation-dedupe-step joined)]
             (delete-query-relation two-hop)
             (delete-query-relation joined)
-            (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+            (mut! stats^.rule-iterations += 1)
             (query-stats-observe-bindings! stats (query-relation-row-count deduped))
             (return deduped deduped.has-typed-columns)))
         (delete-query-relation two-hop))))
@@ -11865,7 +12170,7 @@
           deduped (query-relation-dedupe-step joined)]
       (delete-query-relation rule-rel)
       (delete-query-relation joined)
-      (set! stats^.rule-iterations (+ stats^.rule-iterations 1))
+      (mut! stats^.rule-iterations += 1)
       (query-stats-observe-bindings! stats (query-relation-row-count deduped))
       (return deduped deduped.has-typed-columns))))
 
@@ -28554,6 +28859,10 @@
   (delete columns.entities)
   (delete columns.strings))
 
+(defn delete-entity-string-pair-columns-shallow [columns: Entity-String-Pair-Columns]
+  (delete columns.entities)
+  (delete columns.strings))
+
 (defn append-entity-string-pair-column! [columns: ^Entity-String-Pair-Columns, entity: u64, text: string]
   (arr.push! columns^.entities entity)
   (arr.push! columns^.strings text))
@@ -28576,6 +28885,10 @@
   (delete columns.first)
   (delete columns.second))
 
+(defn delete-string-string-pair-columns-shallow [columns: String-String-Pair-Columns]
+  (delete columns.first)
+  (delete columns.second))
+
 (defn append-owned-string-string-pair-column! [columns: ^String-String-Pair-Columns, first: string, second: string]
   (arr.push! columns^.first (string-owned first))
   (arr.push! columns^.second (string-owned second))
@@ -28590,6 +28903,11 @@
   (when columns.owns-strings
     (for [text columns.strings]
       (delete text)))
+  (delete columns.entities)
+  (delete columns.strings)
+  (delete columns.ints))
+
+(defn delete-entity-string-int-triples-shallow [columns: Entity-String-Int-Triples]
   (delete columns.entities)
   (delete columns.strings)
   (delete columns.ints))
@@ -33160,19 +33478,23 @@
 (defn result-set-from-source-string-int-pair-columns [columns: Entity-String-Int-Triples] -> Result-Set
   (let [rows (make [dynamic]Result-Row 0 (count columns.strings))]
     (for [index (arr.range 0 (count columns.strings))]
-      (append-owned-two-value-row! (addr rows)
-                                   (value-string columns.strings[index])
-                                   (value-int columns.ints[index])))
-    (delete-entity-string-int-triples columns)
+      (append-two-value-row! (addr rows)
+                             (value-string (if columns.owns-strings columns.strings[index] (string-owned columns.strings[index])))
+                             (value-int columns.ints[index])))
+    (if columns.owns-strings
+      (delete-entity-string-int-triples-shallow columns)
+      (delete-entity-string-int-triples columns))
     (result-set-ok rows)))
 
 (defn result-set-from-source-string-string-pair-columns [columns: String-String-Pair-Columns] -> Result-Set
   (let [rows (make [dynamic]Result-Row 0 (count columns.first))]
     (for [index (arr.range 0 (count columns.first))]
-      (append-owned-two-value-row! (addr rows)
-                                   (value-string columns.first[index])
-                                   (value-string columns.second[index])))
-    (delete-string-string-pair-columns columns)
+      (append-two-value-row! (addr rows)
+                             (value-string (if columns.owns-strings columns.first[index] (string-owned columns.first[index])))
+                             (value-string (if columns.owns-strings columns.second[index] (string-owned columns.second[index])))))
+    (if columns.owns-strings
+      (delete-string-string-pair-columns-shallow columns)
+      (delete-string-string-pair-columns columns))
     (result-set-ok rows)))
 
 (defn result-set-from-source-entity-string-int-triples [columns: Entity-String-Int-Triples] -> Result-Set
@@ -33180,9 +33502,11 @@
     (for [index (arr.range 0 (count columns.entities))]
       (append-three-value-row! (addr rows)
                                (value-entity columns.entities[index])
-                               (value-string (string-owned columns.strings[index]))
+                               (value-string (if columns.owns-strings columns.strings[index] (string-owned columns.strings[index])))
                                (value-int columns.ints[index])))
-    (delete-entity-string-int-triples columns)
+    (if columns.owns-strings
+      (delete-entity-string-int-triples-shallow columns)
+      (delete-entity-string-int-triples columns))
     (result-set-ok rows)))
 
 (defn q-db-read-source-entity-int-pair-columns [source: DB-Read-Source, query: Query, inputs: []Query-Input] -> [columns: Entity-Int-Pair-Columns, ok: bool, error: string]
@@ -34594,6 +34918,7 @@
   index: int
   high: int
   current: Datom
+  current-owned: bool
   has-current: bool
 })
 
@@ -34604,7 +34929,8 @@
 
 (defn delete-source-index-datom-stream [stream: Source-Index-Datom-Stream]
   (when stream.has-current
-    (delete-owned-datom stream.current))
+    (when stream.current-owned
+      (delete-owned-datom stream.current)))
   (when stream.use-owned-datoms
     (delete stream.owned-order-indexes)
     (delete-owned-datoms stream.owned-datoms))
@@ -34619,48 +34945,70 @@
     (when stream.run-loaded-page-valid
       (release-sqlite-loaded-index-page! stream.run-loaded-page))))
 
+(defn clear-source-index-datom-stream-current! [stream: ^Source-Index-Datom-Stream]
+  (when stream^.has-current
+    (when stream^.current-owned
+      (delete-owned-datom stream^.current))
+    (set! stream^.has-current false)
+    (set! stream^.current-owned false)))
+
+(defn set-source-index-datom-stream-current-owned! [stream: ^Source-Index-Datom-Stream, datom: Datom]
+  (set! stream^.current datom)
+  (set! stream^.current-owned true)
+  (set! stream^.has-current true))
+
+(defn set-source-index-datom-stream-current-borrowed! [stream: ^Source-Index-Datom-Stream, datom: Datom]
+  (set! stream^.current datom)
+  (set! stream^.current-owned false)
+  (set! stream^.has-current true))
+
 (defn values-owned-array [values: []Value] -> [dynamic]Value
   (let [out (make [dynamic]Value 0 (count values))]
     (for [value values]
       (arr.push! out (value-owned value)))
     out))
 
+(defn db-read-source-all-index-entries-current? [source: DB-Read-Source] -> bool
+  (and (= source.kind .SQLite-Snapshot)
+       (not source.sqlite-snapshot^.has-retractions)))
+
 (defn load-source-index-datom-stream-current-from-sqlite-run-ranges! [source: DB-Read-Source, stream: ^Source-Index-Datom-Stream] -> [ok: bool, error: string]
   (while (< stream^.run-index (count stream^.run-roots))
     (when (< stream^.run-position stream^.run-lows[stream^.run-index])
       (set! stream^.run-position stream^.run-lows[stream^.run-index]))
     (while (< stream^.run-position stream^.run-highs[stream^.run-index])
-      (let [[entry datom entry-ok entry-error] (sqlite-index-root-ordered-datom-at-retained-page-cache stream^.view.sqlite-cursor^.handle
-                                                                                                      stream^.view.sqlite-cursor^.datom-stmt
-                                                                                                      stream^.run-roots[stream^.run-index]
-                                                                                                      stream^.run-position
-                                                                                                      stream^.run-counts[stream^.run-index]
-                                                                                                      stream^.view.sqlite-cursor^.page-size
-                                                                                                      (addr stream^.view.sqlite-cursor^.page-cache)
-                                                                                                      (addr stream^.run-loaded-page)
-                                                                                                      (addr stream^.run-loaded-page-valid))]
+      (let [[entry offset entry-ok entry-error] (sqlite-index-root-ordered-entry-offset-at-retained-page-cache stream^.view.sqlite-cursor^.handle
+                                                                                                             stream^.view.sqlite-cursor^.datom-stmt
+                                                                                                             stream^.run-roots[stream^.run-index]
+                                                                                                             stream^.run-position
+                                                                                                             stream^.run-counts[stream^.run-index]
+                                                                                                             stream^.view.sqlite-cursor^.page-size
+                                                                                                             (addr stream^.view.sqlite-cursor^.page-cache)
+                                                                                                             (addr stream^.run-loaded-page)
+                                                                                                             (addr stream^.run-loaded-page-valid))]
         (when (not entry-ok)
           (return false entry-error))
+        (let [datom stream^.run-loaded-page.datoms[offset]]
         (when stream^.run-dedupe-entries
           (when (set.contains? stream^.run-seen-entries entry)
-            (delete-owned-datom datom)
             (set! stream^.run-position (+ stream^.run-position 1))
             (continue))
           (set.add! stream^.run-seen-entries entry))
-        (let [[current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
+        (let [current true
+              current-ok true
+              current-error ""]
+          (when (not (db-read-source-all-index-entries-current? source))
+            (let [[checked-current checked-ok checked-error] (db-read-source-datom-current-at-entry? source entry)]
+              (set! current checked-current)
+              (set! current-ok checked-ok)
+              (set! current-error checked-error)))
           (when (not current-ok)
-            (delete-owned-datom datom)
             (return false current-error))
           (when current
-            (if (or (not stream^.run-check-values)
-                    (datom-matches-index-values? datom stream^.run-order-text (slice stream^.run-values 0)))
-              (do
-                (set! stream^.current datom)
-                (set! stream^.has-current true)
-                (return true ""))
-              (delete-owned-datom datom)))
-          (when (not current)
-            (delete-owned-datom datom))))
+            (when (or (not stream^.run-check-values)
+                      (datom-matches-index-values? datom stream^.run-order-text (slice stream^.run-values 0)))
+              (set-source-index-datom-stream-current-borrowed! stream datom)
+              (return true ""))))))
       (set! stream^.run-position (+ stream^.run-position 1)))
     (set! stream^.run-index (+ stream^.run-index 1))
     (set! stream^.run-position 0)
@@ -34674,26 +35022,22 @@
   (return true ""))
 
 (defn load-source-index-datom-stream-current! [source: DB-Read-Source, stream: ^Source-Index-Datom-Stream] -> [ok: bool, error: string]
-  (when stream^.has-current
-    (delete-owned-datom stream^.current)
-    (set! stream^.has-current false))
+  (clear-source-index-datom-stream-current! stream)
   (when stream^.use-sqlite-run-ranges
     (return (load-source-index-datom-stream-current-from-sqlite-run-ranges! source stream)))
   (when stream^.use-owned-datoms
     (when (< stream^.index stream^.high)
-      (set! stream^.current (datom-owned stream^.owned-datoms[stream^.owned-order-indexes[stream^.index]]))
-      (set! stream^.has-current true))
+      (set-source-index-datom-stream-current-owned! stream (datom-owned stream^.owned-datoms[stream^.owned-order-indexes[stream^.index]])))
     (return true ""))
   (while (< stream^.index stream^.high)
     (if (and (= stream^.view.kind .SQLite-Cursor)
              (= source.kind .SQLite-Snapshot)
              (not source.sqlite-snapshot^.has-retractions))
-      (let [[_entry datom datom-ok datom-error] (sqlite-index-cursor-entry-and-datom-at stream^.view.sqlite-cursor stream^.index)]
+      (let [[_entry offset datom-ok datom-error] (sqlite-index-cursor-entry-offset-at stream^.view.sqlite-cursor stream^.index)]
         (discard _entry)
         (when (not datom-ok)
           (return false datom-error))
-        (set! stream^.current datom)
-        (set! stream^.has-current true)
+        (set-source-index-datom-stream-current-borrowed! stream stream^.view.sqlite-cursor^.page.datoms[offset])
         (return true ""))
       (let [entry (db-index-view-at stream^.view stream^.index)
             [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
@@ -34705,14 +35049,12 @@
               (discard _same-entry)
               (when (not datom-ok)
                 (return false datom-error))
-              (set! stream^.current datom)
-              (set! stream^.has-current true)
+              (set-source-index-datom-stream-current-owned! stream datom)
               (return true ""))
             (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
               (when (not datom-ok)
                 (return false datom-error))
-              (set! stream^.current datom)
-              (set! stream^.has-current true)
+              (set-source-index-datom-stream-current-owned! stream datom)
               (return true ""))))))
     (set! stream^.index (+ stream^.index 1)))
   (return true ""))
@@ -35098,48 +35440,65 @@
   index-stream: Source-Index-Datom-Stream
   index: int
   current: Datom
+  current-owned: bool
   has-current: bool
 })
 
 (defn delete-source-clause-datom-stream [stream: Source-Clause-Datom-Stream]
   (when stream.has-current
-    (delete-owned-datom stream.current))
+    (when stream.current-owned
+      (delete-owned-datom stream.current)))
   (when stream.use-index-stream
     (delete-source-index-datom-stream stream.index-stream))
   (delete-clause-index-scan stream.scan))
 
 (defn load-source-clause-datom-stream-current! [source: DB-Read-Source, stream: ^Source-Clause-Datom-Stream] -> [ok: bool, error: string]
   (when stream^.has-current
-    (delete-owned-datom stream^.current)
-    (set! stream^.has-current false))
+    (when stream^.current-owned
+      (delete-owned-datom stream^.current))
+    (set! stream^.has-current false)
+    (set! stream^.current-owned false))
   (when stream^.use-index-stream
     (while stream^.index-stream.has-current
-      (let [datom (datom-owned stream^.index-stream.current)]
-        (if (db-read-source-clause-index-scan-candidate? stream^.scan datom)
-          (do
-            (set! stream^.current datom)
-            (set! stream^.has-current true)
-            (return true ""))
-          (delete-owned-datom datom)))
+      (let [datom stream^.index-stream.current]
+        (when (db-read-source-clause-index-scan-candidate? stream^.scan datom)
+          (set! stream^.current datom)
+          (set! stream^.current-owned false)
+          (set! stream^.has-current true)
+          (return true "")))
       (let [[advance-ok advance-error] (advance-source-index-datom-stream! source (addr stream^.index-stream))]
         (when (not advance-ok)
           (return false advance-error))))
     (return true ""))
   (while (< stream^.index stream^.scan.high)
-    (let [entry (clause-index-scan-datom-index stream^.scan stream^.index)
-          [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
-      (when (not current-ok)
-        (return false current-error))
-      (when current
-        (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
-          (when (not datom-ok)
-            (return false datom-error))
-          (if (db-read-source-clause-index-scan-candidate? stream^.scan datom)
-            (do
-              (set! stream^.current datom)
-              (set! stream^.has-current true)
-              (return true ""))
-            (delete-owned-datom datom)))))
+    (if (and (= stream^.scan.view.kind .SQLite-Cursor)
+             (= source.kind .SQLite-Snapshot)
+             (not source.sqlite-snapshot^.has-retractions))
+      (let [[_entry offset datom-ok datom-error] (sqlite-index-cursor-entry-offset-at stream^.scan.view.sqlite-cursor stream^.index)]
+        (discard _entry)
+        (when (not datom-ok)
+          (return false datom-error))
+        (let [datom stream^.scan.view.sqlite-cursor^.page.datoms[offset]]
+          (when (db-read-source-clause-index-scan-candidate? stream^.scan datom)
+            (set! stream^.current datom)
+            (set! stream^.current-owned false)
+            (set! stream^.has-current true)
+            (return true ""))))
+      (let [entry (clause-index-scan-datom-index stream^.scan stream^.index)
+            [current current-ok current-error] (db-read-source-datom-current-at-entry? source entry)]
+        (when (not current-ok)
+          (return false current-error))
+        (when current
+          (let [[datom datom-ok datom-error] (db-read-source-datom-at-entry source entry)]
+            (when (not datom-ok)
+              (return false datom-error))
+            (if (db-read-source-clause-index-scan-candidate? stream^.scan datom)
+              (do
+                (set! stream^.current datom)
+                (set! stream^.current-owned true)
+                (set! stream^.has-current true)
+                (return true ""))
+              (delete-owned-datom datom))))))
     (set! stream^.index (+ stream^.index 1)))
   (return true ""))
 

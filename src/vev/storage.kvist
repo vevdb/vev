@@ -8809,10 +8809,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
               (release-sqlite-loaded-index-page! loaded-page)
               (return entry datom true ""))))))))
 
-(defn sqlite-index-root-ordered-datom-at-retained-page-cache [handle: rawptr, stmt: rawptr, root-id: u64, index: int, row-count: int, page-size: int, page-cache: ^SQLite-Index-Page-Cache, current-page: ^SQLite-Loaded-Index-Page, current-page-valid: ^bool] -> [entry: int, datom: Datom, ok: bool, error: string]
+(defn sqlite-index-root-ordered-entry-offset-at-retained-page-cache [handle: rawptr, stmt: rawptr, root-id: u64, index: int, row-count: int, page-size: int, page-cache: ^SQLite-Index-Page-Cache, current-page: ^SQLite-Loaded-Index-Page, current-page-valid: ^bool] -> [out-entry: int, out-offset: int, ok: bool, error: string]
   (when (or (< index 0)
             (>= index row-count))
-    (return 0 (Datom {}) false "sqlite index ordered root retained-page datom position out of range"))
+    (return 0 0 false "sqlite index ordered root retained-page datom position out of range"))
   (when (and current-page-valid^
              (>= index current-page^.start)
              (< index current-page^.end)
@@ -8821,8 +8821,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (when (or (< offset 0)
                 (>= offset (count current-page^.entries))
                 (>= offset (count current-page^.datoms)))
-        (return 0 (Datom {}) false "sqlite index ordered root retained-page datom was outside loaded page"))
-      (return current-page^.entries[offset] (datom-owned current-page^.datoms[offset]) true "")))
+        (return 0 0 false "sqlite index ordered root retained-page datom was outside loaded page"))
+      (return current-page^.entries[offset] offset true "")))
   (when current-page-valid^
     (release-sqlite-loaded-index-page! current-page^)
     (set! current-page-valid^ false))
@@ -8836,17 +8836,17 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (let [[loaded-page loaded-ok loaded-error] (sqlite-loaded-index-page-with-datoms handle stmt (slice cached-page.entries 0) cached-page.start cached-page.end)]
           (release-sqlite-loaded-index-page! cached-page)
           (when (not loaded-ok)
-            (return 0 (Datom {}) false loaded-error))
+            (return 0 0 false loaded-error))
           (sqlite-index-page-cache-store! page-cache root-id 0 next-page-start loaded-page)
           (set! current-page^ loaded-page)
           (set! current-page-valid^ true)))
       (let [[window _base page-ok page-error] (sqlite-index-root-ordered-window handle root-id next-page-start page-size)]
         (when (not page-ok)
-          (return 0 (Datom {}) false page-error))
+          (return 0 0 false page-error))
         (let [[loaded-page loaded-ok loaded-error] (sqlite-loaded-index-page-with-datoms handle stmt (slice window 0) next-page-start (min (+ next-page-start (count window)) row-count))]
           (delete window)
           (when (not loaded-ok)
-            (return 0 (Datom {}) false loaded-error))
+            (return 0 0 false loaded-error))
           (sqlite-index-page-cache-store! page-cache root-id 0 next-page-start loaded-page)
           (set! current-page^ loaded-page)
           (set! current-page-valid^ true)))))
@@ -8856,8 +8856,14 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
               (< offset 0)
               (>= offset (count current-page^.entries))
               (>= offset (count current-page^.datoms)))
-      (return 0 (Datom {}) false "sqlite index ordered root retained-page datom was outside loaded page after load"))
-    (return current-page^.entries[offset] (datom-owned current-page^.datoms[offset]) true "")))
+      (return 0 0 false "sqlite index ordered root retained-page datom was outside loaded page after load"))
+    (return current-page^.entries[offset] offset true "")))
+
+(defn sqlite-index-root-ordered-datom-at-retained-page-cache [handle: rawptr, stmt: rawptr, root-id: u64, index: int, row-count: int, page-size: int, page-cache: ^SQLite-Index-Page-Cache, current-page: ^SQLite-Loaded-Index-Page, current-page-valid: ^bool] -> [out-entry: int, datom: Datom, ok: bool, error: string]
+  (let [[found-entry found-offset offset-ok offset-error] (sqlite-index-root-ordered-entry-offset-at-retained-page-cache handle stmt root-id index row-count page-size page-cache current-page current-page-valid)]
+    (when (not offset-ok)
+      (return 0 (Datom {}) false offset-error))
+    (return found-entry (datom-owned current-page^.datoms[found-offset]) true "")))
 
 (defn sqlite-index-root-boundary-entry [handle: rawptr, root-id: u64, order: string, last?: bool] -> [entry: int, ok: bool, error: string]
   (let [[row-count first-key _level info-ok info-error] (sqlite-index-chunk-info-by-id-raw handle root-id)]
@@ -9657,22 +9663,28 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (return (Datom {}) false "sqlite index cursor datom page did not contain requested position"))
       (return (datom-owned cursor^.page.datoms[offset]) true ""))))
 
-(defn sqlite-index-cursor-entry-and-datom-at [cursor: ^SQLite-Index-Cursor, index: int] -> [entry: int, datom: Datom, ok: bool, error: string]
+(defn sqlite-index-cursor-entry-offset-at [cursor: ^SQLite-Index-Cursor, index: int] -> [out-entry: int, out-offset: int, ok: bool, error: string]
   (when (or (< index 0)
             (>= index cursor^.row-count))
-    (return 0 (Datom {}) false "sqlite index cursor datom position out of range"))
+    (return 0 0 false "sqlite index cursor datom position out of range"))
   (let [[page-ok page-error] (sqlite-index-cursor-load-page-with-datoms! cursor index)]
     (when (not page-ok)
-      (return 0 (Datom {}) false page-error))
+      (return 0 0 false page-error))
     (let [offset (- index cursor^.page.start)]
       (when (or (< offset 0)
                 (>= offset (count cursor^.page.entries)))
-        (return 0 (Datom {}) false "sqlite index cursor page did not contain requested position"))
+        (return 0 0 false "sqlite index cursor page did not contain requested position"))
       (let [loaded-entry cursor^.page.entries[offset]]
         (when (or (< offset 0)
                   (>= offset (count cursor^.page.datoms)))
-          (return 0 (Datom {}) false "sqlite index cursor datom page did not contain requested position"))
-        (return loaded-entry (datom-owned cursor^.page.datoms[offset]) true "")))))
+          (return 0 0 false "sqlite index cursor datom page did not contain requested position"))
+        (return loaded-entry offset true "")))))
+
+(defn sqlite-index-cursor-entry-and-datom-at [cursor: ^SQLite-Index-Cursor, index: int] -> [out-entry: int, datom: Datom, ok: bool, error: string]
+  (let [[found-entry found-offset offset-ok offset-error] (sqlite-index-cursor-entry-offset-at cursor index)]
+    (when (not offset-ok)
+      (return 0 (Datom {}) false offset-error))
+    (return found-entry (datom-owned cursor^.page.datoms[found-offset]) true "")))
 
 (defn sqlite-index-cursor-clear-merge-state! [cursor: ^SQLite-Index-Cursor]
   (delete-active-datoms! (addr cursor^.merge-current-datoms) (addr cursor^.merge-has-current))
