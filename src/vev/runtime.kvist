@@ -62,6 +62,11 @@
         (for [item value.items]
           (arr.push! items (value-owned item)))
         (value-map-owned items))
+    .Set
+      (let [items (make [dynamic]Value 0 (count value.items))]
+        (for [item value.items]
+          (arr.push! items (value-owned item)))
+        (value-set-owned items))
      value))
 
 (defn datom-owned [datom: Datom] -> Datom
@@ -111,6 +116,11 @@
           (delete-owned-value item))
         (delete value.items))
     .Map
+      (do
+        (for [item value.items]
+          (delete-owned-value item))
+        (delete value.items))
+    .Set
       (do
         (for [item value.items]
           (delete-owned-value item))
@@ -578,6 +588,9 @@
   (let [[output-index output-index-ok] (attr-position attrs output-name)]
     (when (not output-index-ok)
       (return false))
+    (when (< output-index (count columns))
+      (let [[existing existing-ok] (typed-relation-column-value columns[output-index] row)]
+        (return (and existing-ok (predicate-value-equal? existing output-value)))))
     (relation-column-can-add? builder.typed-columns[output-index] output-value)))
 
 (defn query-relation-builder-add-column-row-with-output-value! [builder: ^Query-Relation-Builder, attrs: []string, columns: []Relation-Column, row: int, output-name: string, output-value: Value] -> bool
@@ -3304,6 +3317,33 @@
       (return (predicate-value-equal? left right-entity))))
   false)
 
+(defn value-as-entity-id [value: Value] -> [entity: Value, ok: bool]
+  (case value.kind
+    .Entity (return value true)
+    .Int (return (value-entity (u64 value.int-value)) true)
+     (return (Value {}) false)))
+
+(defn entity-id-value-equal? [left: Value, right: Value] -> bool
+  (when (predicate-value-equal? left right)
+    (return true))
+  (let [[left-entity left-ok] (value-as-entity-id left)]
+    (when left-ok
+      (return (predicate-value-equal? left-entity right))))
+  (let [[right-entity right-ok] (value-as-entity-id right)]
+    (when right-ok
+      (return (predicate-value-equal? left right-entity))))
+  false)
+
+(defn clause-value-equal? [db: DB, attr: string, attr-static: bool, expected: Value, actual: Value] -> bool
+  (when attr-static
+    (when (predicate-value-equal? expected actual)
+      (return true))
+    (let [[resolved resolved-ok] (ref-entity-literal db attr expected)]
+      (when resolved-ok
+        (return (predicate-value-equal? resolved actual))))
+    (return false))
+  (entity-id-value-equal? expected actual))
+
 (defn pull-pattern-input-value [pattern: []Pull-Spec] -> Value
   (let [items (make [dynamic]Value 0 (count pattern)) :defer]
     (for [spec pattern]
@@ -4488,6 +4528,21 @@
       (= op "max")
       (= op "compare")))
 
+(defn source-function-op? [op: string] -> bool
+  (or (= op "entid")
+      (= op "datomic.api/entid")))
+
+(defn source-default-token-term? [term: Term] -> bool
+  (or (and (= term.kind .Var)
+           (= term.name "$"))
+      (and (= term.kind .Value)
+           (= term.value.kind .Symbol)
+           (= term.value.text "$"))))
+
+(defn source-function-has-default-source-token? [function: Function-Clause] -> bool
+  (and (> (count function.terms) 0)
+       (source-default-token-term? function.terms[0])))
+
 (defn typed-function-op-name [function: Function-Clause, registry: []Native-Query-Fn] -> [op: string, ok: bool]
   (when (query-var-name? function.op)
     (return "" false))
@@ -4708,6 +4763,28 @@
           (return (value-int (i64 (value-compare left right))) true))
         (return (Value {}) false)))
     (return (Value {}) false)))
+
+(defn db-read-source-typed-entid-value [source: DB-Read-Source, rel: Query-Relation, row: int, function: Function-Clause] -> [value: Value, ok: bool]
+  (when (not (and (= (count function.terms) 2)
+                  (source-function-has-default-source-token? function)))
+    (return (Value {}) false))
+  (let [[input input-ok] (query-relation-resolve-typed-term rel row function.terms[1])]
+    (when (not input-ok)
+      (return (Value {}) false))
+    (let [[resolved resolved-ok _] (db-read-source-resolve-ref-component-value source input)]
+      (when (not resolved-ok)
+        (return (Value {}) false))
+      (when (= resolved.kind .Entity)
+        (return resolved true))
+      (when (= resolved.kind .Int)
+        (return (value-entity (u64 resolved.int-value)) true))
+      (return (Value {}) false))))
+
+(defn db-read-source-typed-function-op-value [source: DB-Read-Source, rel: Query-Relation, row: int, function: Function-Clause, registry: []Native-Query-Fn] -> [value: Value, ok: bool]
+  (let [[op op-ok] (query-op-name function.op (Binding {}))]
+    (when (and op-ok (source-function-op? op))
+      (return (db-read-source-typed-entid-value source rel row function))))
+  (typed-function-op-value rel row function registry))
 
 (defn map-get-value [map-value: Value, key: Value] -> [value: Value, ok: bool]
   (when (not (= map-value.kind .Map))
@@ -6483,7 +6560,9 @@
           (set! v-ok true))))
     (when (and a-ok
                v-ok
-               (= a-value.kind .Keyword))
+               (= a-value.kind .Keyword)
+               (= clause.a.kind .Value)
+               (= clause.a.value.kind .Keyword))
       (let [[attr-is-ref ref-ok ref-error] (db-read-source-schema-ref? source a-value.text)]
         (when (not ref-ok)
           (return (db-read-source-empty-clause-index-scan source) false ref-error))
@@ -7115,6 +7194,56 @@
           (delete-value-containers-shallow value))))
     (return out true "")))
 
+(defn db-read-source-entid-value [source: DB-Read-Source, binding: Binding, function: Function-Clause] -> [value: Value, ok: bool, error: string]
+  (when (not (and (= (count function.terms) 2)
+                  (source-function-has-default-source-token? function)))
+    (return (Value {}) false "entid clauses must have shape [(entid $ value) ?out]"))
+  (let [[input input-ok] (db-read-source-term-resolved-value function.terms[1] binding)]
+    (when (not input-ok)
+      (return (Value {}) false ""))
+    (let [[resolved resolved-ok resolved-error] (db-read-source-resolve-ref-component-value source input)]
+      (when (not resolved-ok)
+        (return (Value {}) false resolved-error))
+      (when (= resolved.kind .Entity)
+        (return resolved true ""))
+      (when (= resolved.kind .Int)
+        (return (value-entity (u64 resolved.int-value)) true ""))
+      (return (Value {}) false ""))))
+
+(defn db-read-source-function-op-value [source: DB-Read-Source, binding: Binding, function: Function-Clause] -> [value: Value, ok: bool, error: string]
+  (let [[op op-ok] (query-op-name function.op binding)]
+    (when (not op-ok)
+      (return (Value {}) false ""))
+    (when (source-function-op? op)
+      (return (db-read-source-entid-value source binding function))))
+  (let [[applied applied-ok] (apply-function-op function binding)]
+    (return applied applied-ok "")))
+
+(defn db-read-source-bindings-after-function-with-source [source: DB-Read-Source, input-bindings: []Binding, function: Function-Clause] -> [out-bindings: [dynamic]Binding, ok: bool, error: string]
+  (let [out (make [dynamic]Binding)]
+    (for [binding input-bindings]
+      (let [[value value-ok value-error] (db-read-source-function-op-value source binding function)]
+        (when (not (= value-error ""))
+          (db-read-source-delete-bindings-owned out)
+          (return (make [dynamic]Binding) false value-error))
+        (when value-ok
+          (if (not (= function.out-binding.kind .None))
+            (let [bound (db-read-source-bind-input-pattern-owned binding function.out-binding value)]
+              (for [item bound]
+                (arr.push! out item))
+              (delete bound))
+            (if function.is-tuple
+              (let [bound (db-read-source-bind-tuple-output binding function.out-vars value)]
+                (for [item bound]
+                  (arr.push! out item))
+                (delete bound))
+              (let [owned-value (value-owned value)
+                    [next next-ok] (db-read-source-binding-with-owned-value binding function.out owned-value)]
+                (when next-ok
+                  (arr.push! out next)))))
+          (delete-value-containers-shallow value))))
+    (return out true "")))
+
 (defn fulltext-score [search: string, text: string] -> f64
   (cond
     (= search text) 1.0
@@ -7406,7 +7535,7 @@
           (let [[next next-ok next-error] (db-read-source-bindings-after-fulltext-with-sources source sources (slice bindings 0) function)]
             (db-read-source-delete-bindings-owned bindings)
             (return next next-ok next-error))
-          (let [[next next-ok next-error] (db-read-source-bindings-after-function (slice bindings 0) function)]
+          (let [[next next-ok next-error] (db-read-source-bindings-after-function-with-source source (slice bindings 0) function)]
             (db-read-source-delete-bindings-owned bindings)
             (return next next-ok next-error))))
     (= step.kind .GetElse)
@@ -11250,7 +11379,7 @@
         (let [out (query-relation-filter-predicate (DB {}) rel predicates[step.index] registry)]
           (return out out.has-typed-columns)))
     (= step.kind .Function)
-      (query-relation-extend-function-typed rel functions[step.index] registry)
+      (db-read-source-query-relation-extend-function-typed source rel functions[step.index] registry)
     (= step.kind .Ground)
       (query-relation-apply-ground-typed rel grounds[step.index])
     (= step.kind .GetElse)
@@ -11277,7 +11406,7 @@
         (let [out (query-relation-filter-predicate (DB {}) rel group.predicates[step.index] registry)]
           (return out out.has-typed-columns)))
     (= step.kind .Function)
-      (query-relation-extend-function-typed rel group.function-clauses[step.index] registry)
+      (db-read-source-query-relation-extend-function-typed source rel group.function-clauses[step.index] registry)
     (= step.kind .Ground)
       (query-relation-apply-ground-typed rel group.grounds[step.index])
     (= step.kind .GetElse)
@@ -11643,7 +11772,7 @@
         (let [out (query-relation-filter-predicate (DB {}) rel predicates[step.index] registry)]
           (return out out.has-typed-columns)))
     (= step.kind .Function)
-      (query-relation-extend-function-typed rel functions[step.index] registry)
+      (db-read-source-query-relation-extend-function-typed source rel functions[step.index] registry)
     (= step.kind .Ground)
       (query-relation-apply-ground-typed rel grounds[step.index])
     (= step.kind .GetElse)
@@ -11671,10 +11800,10 @@
     (let [filtered (query-relation-filter-predicate (DB {}) rel predicate registry)]
       (return filtered filtered.has-typed-columns))))
 
-(defn db-read-source-query-relation-apply-physical-function-op [rel: Query-Relation, op: Physical-Op, query-value: Query, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+(defn db-read-source-query-relation-apply-physical-function-op [source: DB-Read-Source, rel: Query-Relation, op: Physical-Op, query-value: Query, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
   (when (not (query-relation-has-physical-op-inputs? rel op))
     (return (query-relation-empty) false))
-  (query-relation-extend-function-typed rel query-value.function-clauses[op.item-index] registry))
+  (db-read-source-query-relation-extend-function-typed source rel query-value.function-clauses[op.item-index] registry))
 
 (defn db-read-source-query-relation-apply-physical-ground-op [rel: Query-Relation, op: Physical-Op, query-value: Query] -> [out: Query-Relation, ok: bool]
   (when (not (query-relation-has-physical-op-inputs? rel op))
@@ -11731,7 +11860,7 @@
     .Predicate
       (db-read-source-query-relation-apply-physical-predicate-op rel op query-value registry)
     .Function
-      (db-read-source-query-relation-apply-physical-function-op rel op query-value registry)
+      (db-read-source-query-relation-apply-physical-function-op source rel op query-value registry)
     .Ground
       (db-read-source-query-relation-apply-physical-ground-op rel op query-value)
     .GetElse
@@ -11785,7 +11914,7 @@
     .Predicate
       (db-read-source-query-relation-apply-physical-predicate-op rel op query-value registry)
     .Function
-      (db-read-source-query-relation-apply-physical-function-op rel op query-value registry)
+      (db-read-source-query-relation-apply-physical-function-op source rel op query-value registry)
     .Ground
       (db-read-source-query-relation-apply-physical-ground-op rel op query-value)
     .GetElse
@@ -12285,7 +12414,7 @@
                 (when (not next-ok)
                   (return (result-set-error next-error)))
                 (set! bindings next))
-              (let [[next next-ok next-error] (db-read-source-bindings-after-function (slice bindings 0) function)]
+              (let [[next next-ok next-error] (db-read-source-bindings-after-function-with-source source (slice bindings 0) function)]
                 (db-read-source-delete-bindings-owned bindings)
                 (when (not next-ok)
                   (return (result-set-error next-error)))
@@ -12713,7 +12842,7 @@
                 (when (not next-ok)
                   (return (result-set-error next-error)))
                 (set! bindings next))
-              (let [[next next-ok next-error] (db-read-source-bindings-after-function (slice bindings 0) function)]
+              (let [[next next-ok next-error] (db-read-source-bindings-after-function-with-source source (slice bindings 0) function)]
                 (db-read-source-delete-bindings-owned bindings)
                 (when (not next-ok)
                   (return (result-set-error next-error)))
@@ -15584,18 +15713,20 @@
             (return (value-entity entity) true))))))
   (return value false))
 
-(defn match-clause-value-term? [db: DB, attr: string, term: Term, actual: Value, binding: ^Binding] -> bool
+(defn match-clause-value-term? [db: DB, attr: string, attr-static: bool, term: Term, actual: Value, binding: ^Binding] -> bool
   (when (= term.kind .LookupRef)
     (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup-attr term.lookup-value)]
       (return (and lookup-ok (value-equal? (value-entity entity) actual)))))
   (when (= term.kind .Var)
     (let [[existing exists] (binding-lookup binding^ term.name)]
       (if exists
-        (return (entity-value-equal? db existing actual))
+        (return (clause-value-equal? db attr attr-static existing actual))
         (do
           (binding-store! binding term.name actual)
           (return true)))))
   (when (= term.kind .Value)
+    (when (not attr-static)
+      (return (entity-id-value-equal? term.value actual)))
     (let [[resolved ok] (ref-entity-literal db attr term.value)]
       (when ok
         (return (value-equal? resolved actual)))))
@@ -15686,7 +15817,10 @@
              (datom-tx-op-terms-match? datom clause binding)))))
   (and (match-entity-term? db clause.e (value-entity datom.e) binding)
        (match-term? clause.a (value-keyword datom.a) binding)
-       (match-clause-value-term? db datom.a clause.v datom.v binding)
+       (match-clause-value-term? db datom.a
+                                 (and (= clause.a.kind .Value)
+                                      (= clause.a.value.kind .Keyword))
+                                 clause.v datom.v binding)
        (datom-tx-op-terms-match? datom clause binding)))
 
 (defn candidate-index-matches? [datom: Datom,
@@ -16427,7 +16561,11 @@
       (let [[entity entity-ok] (lookup-ref-value-as-entity db v-value)]
         (when entity-ok
           (set! v-value entity))))
-    (when (and a-ok v-ok (= a-value.kind .Keyword))
+    (when (and a-ok
+               v-ok
+               (= a-value.kind .Keyword)
+               (= clause.a.kind .Value)
+               (= clause.a.value.kind .Keyword))
       (let [[resolved resolved-ok] (ref-entity-literal db a-value.text v-value)]
         (when resolved-ok
           (set! v-value resolved))))
@@ -20670,6 +20808,7 @@
 
 (defn function-op-supported? [op: string] -> bool
   (or (query-var-name? op)
+      (source-function-op? op)
       (= op "count")
       (= op "identity")
       (= op "ground")
@@ -20705,8 +20844,11 @@
       (= op "compare")))
 
 (defn validate-term-vars-bound [available: []string, terms: []Term, ctx: string] -> [ok: bool, error: string]
-  (for [term terms]
+  (for [term index terms]
     (when (and (= term.kind .Var)
+               (not (and (= index 0)
+                         (source-function-op? ctx)
+                         (source-default-token-term? term)))
                (not (string-slice-contains? available term.name)))
       (return false (fmt.tprintf "insufficient bindings for %s: %s" ctx term.name))))
   (return true ""))
@@ -22976,6 +23118,89 @@
                                typed-rows: builder.typed-rows
                                has-typed-columns: builder.typed-ok}) true))))
 
+(defn db-read-source-query-relation-extend-function-out-binding-typed [source: DB-Read-Source, rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+  (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+        attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))
+        output-vars (make [dynamic]string) :defer
+        seen-output-vars (set.empty string) :defer]
+    (append-input-binding-vars-indexed! (addr output-vars) (addr seen-output-vars) function.out-binding)
+    (for [name output-vars]
+      (append-var-binding-attr! (addr attrs) (addr attr-sources) name ""))
+    (let [builder (query-relation-builder (slice attrs 0))
+          row 0]
+      (while (< row rel.typed-rows)
+        (let [[value value-ok] (db-read-source-typed-function-op-value source rel row function registry)]
+          (when value-ok
+            (if (input-binding-contains-collection? function.out-binding)
+              (let [[produced-rows produced-ok] (typed-produced-value-rows-from-input-binding rel row function.out-binding value (slice output-vars 0))]
+                (when produced-ok
+                  (for [produced produced-rows]
+                    (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced.values 0)))
+                      (delete-typed-produced-values produced-rows)
+                      (delete attrs)
+                      (delete attr-sources)
+                      (delete-query-relation-builder builder)
+                      (return (query-relation-empty) false))))
+                (delete-typed-produced-values produced-rows))
+              (let [[produced produced-ok] (typed-produced-values-from-input-binding rel row function.out-binding value (slice output-vars 0))]
+                (when produced-ok
+                  (when (not (query-relation-builder-add-column-row-with-values! (addr builder) (slice rel.typed-columns 0) row (slice produced 0)))
+                    (delete produced)
+                    (delete attrs)
+                    (delete attr-sources)
+                    (delete-query-relation-builder builder)
+                    (return (query-relation-empty) false)))
+                (delete produced)))))
+        (set! row (+ row 1)))
+      (return (Query-Relation {attrs: attrs
+                               attr-sources: attr-sources
+                               attr-index: (query-relation-attr-index (slice attrs 0))
+                               tuples: builder.tuples
+                               typed-columns: builder.typed-columns
+                               typed-rows: builder.typed-rows
+                               has-typed-columns: builder.typed-ok}) true))))
+
+(defn db-read-source-query-relation-extend-function-typed [source: DB-Read-Source, rel: Query-Relation, function: Function-Clause, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
+  (let [[op op-ok] (query-op-name function.op (Binding {}))]
+    (when (and op-ok (source-function-op? op))
+      (when (not rel.has-typed-columns)
+        (let [materialized (query-relation-materialized-bindings rel)
+              [bindings bindings-ok _] (db-read-source-bindings-after-function-with-source source (slice materialized 0) function)]
+          (when (not bindings-ok)
+            (delete materialized)
+            (db-read-source-delete-bindings-owned bindings)
+            (return (query-relation-empty) false))
+          (let [out (query-relation-from-bindings-inheriting-sources (slice bindings 0) rel)]
+            (delete materialized)
+            (db-read-source-delete-bindings-owned bindings)
+            (return out true))))
+      (when (not (= function.out-binding.kind .None))
+        (return (db-read-source-query-relation-extend-function-out-binding-typed source rel function registry)))
+      (when (or function.is-tuple (= function.out ""))
+        (return (query-relation-empty) false))
+      (let [attrs (arr.into [dynamic]string (slice rel.attrs 0))
+            attr-sources (arr.into [dynamic]string (slice rel.attr-sources 0))]
+        (append-var-binding-attr! (addr attrs) (addr attr-sources) function.out "")
+        (let [builder (query-relation-builder (slice attrs 0))
+              row 0]
+          (while (< row rel.typed-rows)
+            (let [[value value-ok] (db-read-source-typed-function-op-value source rel row function registry)]
+              (when value-ok
+                (when (not (query-relation-builder-add-column-row-with-output-value! (addr builder) (slice attrs 0) (slice rel.typed-columns 0) row function.out value))
+                  (delete attrs)
+                  (delete attr-sources)
+                  (delete-query-relation-builder builder)
+                  (return (query-relation-empty) false))))
+            (set! row (+ row 1)))
+          (return (Query-Relation {attrs: attrs
+                                   attr-sources: attr-sources
+                                   attr-index: (query-relation-attr-index (slice attrs 0))
+                                   tuples: builder.tuples
+                                   typed-columns: builder.typed-columns
+                                   typed-rows: builder.typed-rows
+                                   has-typed-columns: builder.typed-ok}) true)))))
+  (query-relation-extend-function-typed rel function registry))
+
 (defn query-relation-extend-function-binding-typed [rel: Query-Relation, op: string, terms: []Term, binding: Input-Binding, registry: []Native-Query-Fn] -> [out: Query-Relation, ok: bool]
   (when (not rel.has-typed-columns)
     (return (query-relation-empty) false))
@@ -23562,17 +23787,19 @@
       .Int (return (u64 value.int-value) true)
        (return 0 false))))
 
-(defn typed-bound-clause-term-matches? [db: DB, rel: Query-Relation, row: int, attr: string, term: Term, actual: Value] -> bool
+(defn typed-bound-clause-term-matches? [db: DB, rel: Query-Relation, row: int, attr: string, attr-static: bool, term: Term, actual: Value] -> bool
   (case term.kind
     .Wildcard true
     .Var (let [[existing existing-ok] (query-relation-typed-row-value rel row term.name)]
            (if existing-ok
-             (entity-value-equal? db existing actual)
+             (clause-value-equal? db attr attr-static existing actual)
              true))
-    .Value (let [[resolved resolved-ok] (ref-entity-literal db attr term.value)]
-             (if resolved-ok
-               (value-equal? resolved actual)
-               (value-equal? term.value actual)))
+    .Value (if attr-static
+             (let [[resolved resolved-ok] (ref-entity-literal db attr term.value)]
+               (if resolved-ok
+                 (value-equal? resolved actual)
+                 (value-equal? term.value actual)))
+             (entity-id-value-equal? term.value actual))
     .LookupRef (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup-attr term.lookup-value)]
                  (and lookup-ok (value-equal? (value-entity entity) actual)))
      false))
@@ -23646,16 +23873,18 @@
              (value-equal? term.value actual))
      false))
 
-(defn unbound-clause-value-term-matches? [db: DB, attr: string, term: Term, actual: Value] -> bool
+(defn unbound-clause-value-term-matches? [db: DB, attr: string, attr-static: bool, term: Term, actual: Value] -> bool
   (case term.kind
     .Wildcard true
     .LookupRef (let [[entity lookup-ok] (resolve-lookup-ref db term.lookup-attr term.lookup-value)]
                  (and lookup-ok (value-equal? (value-entity entity) actual)))
     .Var true
-    .Value (let [[resolved resolved-ok] (ref-entity-literal db attr term.value)]
-             (if resolved-ok
-               (value-equal? resolved actual)
-               (value-equal? term.value actual)))
+    .Value (if attr-static
+             (let [[resolved resolved-ok] (ref-entity-literal db attr term.value)]
+               (if resolved-ok
+                 (value-equal? resolved actual)
+                 (value-equal? term.value actual)))
+             (entity-id-value-equal? term.value actual))
      false))
 
 (defn unbound-datom-clause-values [datom: Datom, clause-value: Clause] -> [e-value: Value, a-value: Value, v-value: Value]
@@ -23689,7 +23918,10 @@
            (typed-clause-repeated-vars-match? db clause-value e-value a-value v-value tx-value op-value))
       (and (unbound-clause-entity-term-matches? db clause-value.e e-value)
            (unbound-clause-term-matches? clause-value.a a-value)
-           (unbound-clause-value-term-matches? db datom.a clause-value.v v-value)
+           (unbound-clause-value-term-matches? db datom.a
+                                               (and (= clause-value.a.kind .Value)
+                                                    (= clause-value.a.value.kind .Keyword))
+                                               clause-value.v v-value)
            (unbound-clause-optional-term-matches? clause-value.tx-term tx-value)
            (unbound-clause-optional-term-matches? clause-value.op-term op-value)
            (typed-clause-repeated-vars-match? db clause-value e-value a-value v-value tx-value op-value)))))
@@ -23762,7 +23994,10 @@
           v-value datom.v]
       (and (typed-bound-entity-term-matches? db rel row clause-value.e e-value)
            (typed-bound-attr-term-matches? rel row clause-value.a a-value)
-           (typed-bound-clause-term-matches? db rel row datom.a clause-value.v v-value)
+           (typed-bound-clause-term-matches? db rel row datom.a
+                                             (and (= clause-value.a.kind .Value)
+                                                  (= clause-value.a.value.kind .Keyword))
+                                             clause-value.v v-value)
            (typed-bound-optional-term-matches? rel row clause-value.tx-term tx-value)
            (typed-bound-optional-term-matches? rel row clause-value.op-term op-value)
            (typed-clause-repeated-vars-match? db clause-value e-value a-value v-value tx-value op-value)))))
@@ -23860,7 +24095,7 @@
                 (let [datom-index (db-index-view-at view i)
                       datom db.datoms[datom-index]]
                   (when (and (or all-current (datom-current-at? db datom-index))
-                             (typed-bound-clause-term-matches? db rel row attr clause-value.v datom.v)
+                             (typed-bound-clause-term-matches? db rel row attr true clause-value.v datom.v)
                              (typed-bound-optional-term-matches? rel row clause-value.tx-term (datom-tx-value datom))
                              (typed-bound-optional-term-matches? rel row clause-value.op-term (datom-op-value datom))
                              (resident-clause-pushdown-matches? op rel row datom clause-value))
@@ -26234,8 +26469,11 @@
         seen (set.empty string) :defer]
     (when (query-var-name? function.op)
       (append-var-once-indexed! (addr vars) (addr seen) function.op))
-    (for [term function.terms]
-      (append-term-var-indexed! (addr vars) (addr seen) term))
+    (for [term index function.terms]
+      (when (not (and (= index 0)
+                      (source-function-op? function.op)
+                      (source-default-token-term? term)))
+        (append-term-var-indexed! (addr vars) (addr seen) term)))
     (for [name vars]
       (when (not (string-slice-contains? available name))
         (return false)))

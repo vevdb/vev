@@ -61,6 +61,9 @@
              (transient {})
              (.entries ^Vev$MapValue value)))
 
+    (instance? java.util.Set value)
+    (set (map clj-value value))
+
     (instance? java.util.List value)
     (mapv clj-value value)
 
@@ -799,9 +802,25 @@
                     index))
                 (or (query-find-forms query) [])))
 
+(defn- limited-rand-aggregate-form? [form]
+  (and (seq? form)
+       (= 'rand (first form))
+       (= 3 (count form))))
+
+(defn- limited-rand-aggregate-indexes [query]
+  (keep-indexed (fn [index form]
+                  (when (limited-rand-aggregate-form? form)
+                    index))
+                (or (query-find-forms query) [])))
+
 (defn- coerce-distinct-aggregate-value [value]
   (if (sequential? value)
     (set value)
+    value))
+
+(defn- coerce-limited-rand-aggregate-value [value]
+  (if (sequential? value)
+    (seq value)
     value))
 
 (defn- coerce-distinct-aggregate-row [indexes row]
@@ -814,14 +833,32 @@
             indexes)
     row))
 
+(defn- coerce-limited-rand-aggregate-row [indexes row]
+  (if (seq indexes)
+    (reduce (fn [out index]
+              (if (< index (count out))
+                (assoc out index (coerce-limited-rand-aggregate-value (nth out index)))
+                out))
+            (vec row)
+            indexes)
+    row))
+
 (defn- coerce-distinct-aggregates [query rows]
   (let [indexes (vec (distinct-aggregate-indexes query))]
     (if (seq indexes)
       (mapv #(coerce-distinct-aggregate-row indexes %) rows)
       rows)))
 
+(defn- coerce-limited-rand-aggregates [query rows]
+  (let [indexes (vec (limited-rand-aggregate-indexes query))]
+    (if (seq indexes)
+      (mapv #(coerce-limited-rand-aggregate-row indexes %) rows)
+      rows)))
+
 (defn- apply-find-shape [query rows]
-  (let [rows (coerce-distinct-aggregates query rows)]
+  (let [rows (->> rows
+                  (coerce-distinct-aggregates query)
+                  (coerce-limited-rand-aggregates query))]
     (case (query-find-shape query)
       :scalar (first-row-value rows)
       :collection (set (map first rows))

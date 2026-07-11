@@ -251,6 +251,14 @@
     [?artist :artist/name ?artist-name]
     [?artist ?reference ?country]])
 
+(def dynamic-reference-country-entid-query
+  '[:find [?artist-name ...]
+    :in $ ?country [?reference ...]
+    :where
+    [(datomic.api/entid $ ?country) ?country-id]
+    [?artist :artist/name ?artist-name]
+    [?artist ?reference ?country-id]])
+
 (def artist-type-gender-query
   '[:find ?id ?type ?gender
     :in $ ?name
@@ -639,6 +647,9 @@
 (defn dynamic-reference-country-artists [db]
   (d/q dynamic-reference-country-query db :country/BE [:artist/country]))
 
+(defn dynamic-reference-country-artists-entid [db]
+  (d/q dynamic-reference-country-entid-query db :country/BE [:artist/country]))
+
 (defn artist-type-gender [db]
   (d/q artist-type-gender-query db "Janis Joplin"))
 
@@ -902,7 +913,8 @@
           country-lookup-ref (country-artists-by-lookup-ref db)
           country-ident (country-artists-by-ident db)
           country-entity (country-artists-by-entity db)
-          dynamic-reference (dynamic-reference-country-artists db)]
+          dynamic-reference (dynamic-reference-country-artists db)
+          dynamic-reference-entid (dynamic-reference-country-artists-entid db)]
       (assert (some? missing-db-error))
       (assert (.contains ^String missing-db-error ":in does not include $"))
       (assert (= 29 (count relation)))
@@ -937,7 +949,8 @@
       (assert (= country-lookup-ref country-ident))
       (assert (= country-ident country-entity))
       (assert (= 10 (count country-ident)))
-      (assert (= country-ident dynamic-reference))
+      (assert (empty? dynamic-reference))
+      (assert (= country-ident dynamic-reference-entid))
       {:missing-db-status :error
        :missing-db-error missing-db-error
        :relation-find-releases (count relation)
@@ -967,8 +980,9 @@
        :country-artists-by-lookup-ref (count country-lookup-ref)
        :country-artists-by-ident (count country-ident)
        :country-artists-by-entity (count country-entity)
-       :dynamic-reference-status :known-datomic-divergence
-       :dynamic-reference-count (count dynamic-reference)})))
+       :dynamic-reference-status :matches-datomic
+       :dynamic-reference-count (count dynamic-reference)
+       :dynamic-reference-entid-count (count dynamic-reference-entid)})))
 
 (defn validate-basic-aggregations! []
   (with-open [conn (connect)

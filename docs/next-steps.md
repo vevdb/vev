@@ -108,14 +108,30 @@ Covered in both `examples/clojure/musicbrainz_workshop.clj` and
 - opening aggregate tutorial examples from `tutorial/aggregates.clj` over
   `bigger-than-pluto.edn`: count objects, largest radius, smallest radius,
   average radius, median radius, standard deviation of radius, and random
-  object name selection, plus the `min 3` and `max 3` radius top-n aggregates.
-  Vev loads the upstream object transaction into a persistent store for both
-  Clojure and Kvist. The Datomic schema bootstrap transaction is skipped
-  because Vev does not need `:db.install/_attribute` for these queries and the
-  queried facts are in the second upstream transaction. Statistical aggregates
-  handle float inputs in the relation, typed, and persisted source-backed
-  aggregate paths, scalar `(rand ?x)` works from both EDN text and Kvist
-  literal queries, and scalar top-n aggregates return the Datomic vector shape.
+  object name selection, the `min 3` and `max 3` radius top-n aggregates, and
+  `rand 5`/`sample 5` object-name selections, plus the schema-name
+  average-length query, schema-name modes custom aggregate query, and final
+  schema attribute/value-type count query. Vev loads the upstream schema
+  bootstrap transaction and object transaction into a persistent store for both
+  Clojure and Kvist, while stripping only Datomic's
+  `:db.install/_attribute` marker. Statistical aggregates handle float inputs
+  in the relation, typed, and persisted source-backed aggregate paths, scalar
+  `(rand ?x)` works from both EDN text and Kvist literal queries, scalar top-n
+  aggregates return the Datomic vector shape, and Clojure limited `rand`
+  aggregate values expose Datomic's sequence shape while `sample` exposes the
+  unique vector shape; Kvist keeps the native vector value shape for both.
+  Custom aggregate results can preserve EDN set values through native Vev, the
+  C ABI, Java, and Clojure. `scripts/compare_aggregates_tutorial.sh` compares
+  this upstream aggregate section against local Datomic: portable object
+  aggregate rows match, while schema-introspection rows intentionally differ
+  because local Datomic includes internal system schema facts and Vev evaluates
+  the upstream fixture schema facts.
+- opening `decomposing_a_query.clj` examples over the in-memory `kvs`
+  relation source: original slow query count, dropped-clause count,
+  cross-product count, single-clause count, reordered count, and optimized
+  `:in` query result. The Clojure path uses Datomic-like request-map
+  `d/query`; the Kvist path uses native query-first literal Datalog through
+  `vev.q-relation-db`.
 
 The Clojure path uses the Datomic-like `vev.core` API. The Kvist path uses the
 Vev Kvist package directly against the same persistent store. The Kvist query
@@ -165,13 +181,17 @@ internals:
    examples, then all of `day-of-datomic/tutorial/pull.clj`.
    `examples/clojure/aggregates_tutorial.clj` and
    `examples/kvist/aggregates_tutorial.kvist` cover
-   `day-of-datomic/tutorial/aggregates.clj` through the `largest 3` query.
+   all current executable forms in `day-of-datomic/tutorial/aggregates.clj`.
+   `examples/clojure/decomposing_query.clj` and
+   `examples/kvist/decomposing_query.kvist` cover the opening executable
+   relation-source forms in `day-of-datomic/tutorial/decomposing_a_query.clj`.
 
    Kvist tutorial API status:
 
    - simple query, tuple input, collection input, relation input, find-shape,
-     return-map, function-expression, and aggregate examples now use
-     `vev.q-result-store-db` with literal Datalog forms and query-first order
+     return-map, function-expression, dynamic attribute-position queries, and
+     aggregate examples now use `vev.q-result-store-db` with literal Datalog
+     forms and query-first order
    - the remaining EDN strings in `examples/kvist/musicbrainz_workshop.kvist`
      should be migrated to literal forms when touching those sections, except
      for cases deliberately exercising the EDN text parser or non-Kvist
@@ -192,19 +212,16 @@ internals:
      host interop/query-language slice unless they become necessary for
      MusicBrainz workshop parity.
    - Vev covers the DB-backed dynamic attribute examples that follow those
-     host forms, except for the final upstream `datomic.api/entid` fix query
-     described below.
-   - Vev currently resolves ident keywords in dynamic attribute clauses more
-     eagerly than Datomic. The upstream form marked "this will not work as
-     desired" returns the Belgian artist rows in Vev; this is documented in
-     the Clojure tutorial as `:known-datomic-divergence` until query-time
-     `entid` support and exact Datomic dynamic-attribute semantics are fixed.
-   - query-time `datomic.api/entid` / `entid` is still missing, so the upstream
-     dynamic-attribute repair query is not yet covered.
-   - the Kvist literal query DSL currently cannot express the numeric
-     attribute-position form `[?attr 42 _]`; the EDN text API covers it today.
-     Add literal support before claiming full Kvist literal parity for this
-     section.
+     host forms, including Datomic's warning case and the upstream
+     `datomic.api/entid` repair query. Dynamic attribute clauses no longer
+     implicitly resolve keyword idents in value position; the upstream form
+     marked "this will not work as desired" returns no Belgian artist rows,
+     while the repaired `entid` form returns the expected rows.
+   - query-time `datomic.api/entid` / `entid` is supported for the default
+     source token and is validated by the exact upstream dynamic-attribute
+     repair query in both Clojure and Kvist.
+   - the Kvist literal query DSL covers the upstream numeric attribute-position
+     form `[?attr 42 _]`, matching the EDN text API for this section.
    - Clojure `d/log` supports the upstream `tx-ids` and `tx-data` query shapes
      against durable Vev connections; local Vev stores use compact tx ids
      rather than Datomic sample tx ids, so examples preserve the upstream query
@@ -253,11 +270,12 @@ internals:
    - the Clojure wrapper now supports the `decomposing_a_query.clj` style
      in-memory vector source: request-map `:args` may start with a vector of
      `[e a v]` triples, which is queried as a relation DB source
-   - `examples/clojure/decomposing_query.clj` ports the opening `kvs`
-     relation and validates the fast decomposition queries: original slow
-     query count `1`, dropped-clause count `2000`, cross-product count
-     `4000000`, single-clause count `2000`, reordered count `1`, and optimized
-     `:in` query result `#{[10 10]}`
+   - `examples/clojure/decomposing_query.clj` and
+     `examples/kvist/decomposing_query.kvist` port the opening `kvs` relation
+     and validate the fast decomposition queries: original slow query count
+     `1`, dropped-clause count `2000`, cross-product count `4000000`,
+     single-clause count `2000`, reordered count `1`, and optimized `:in`
+     query result `#{[10 10]}` / `[10 10]`
    - large relation-source query results can use a delayed counted relation:
      `(count (d/query ...))` validates dangerous cross-products without
      materializing millions of host rows, while ordinary small results still
@@ -299,30 +317,14 @@ internals:
      examples on the generic relation engine, though broad branch scans remain
      a legitimate later performance target
 
-   Next upstream section:
+   Next concrete parity work:
 
-   - `build/upstream/day-of-datomic/tutorial/aggregates.clj`
-   - section: `;; 5 random (duplicates possible)`, the next aggregate form
-     after `largest 3`:
-     `[:find (rand 5 ?name) . :with ?e :where [?e :object/name ?name]]`
-
-   Next work for this upstream section:
-
-   - port the concrete `aggregates.clj` `rand 5` block over object names from
-     `bigger-than-pluto.edn`
-   - add Clojure and Kvist tutorial validation for the same upstream form
    - reuse existing Vev aggregate support where it already matches and fix real
      semantic/performance gaps when they appear
-   - add `entid` query function support and revisit exact dynamic-attribute
-     ident semantics before claiming full parity for the dynamic-attribute
-     block
    - keep the existing Clojure host predicate/function/aggregate coverage
      aligned with the exact upstream forms, and add matching Kvist literal
      forms where the function is built-in and does not require host callback
      registration
-   - add a Kvist-side decomposing-query tutorial only if the upstream
-     relation-source examples are needed for the parallel workshop path; keep
-     it query-first and literal where Kvist syntax supports the form
    - add the Kvist-side custom predicate/aggregate function exposure only when
      a concrete upstream tutorial form needs it, keeping the query-first native
      literal style
@@ -347,7 +349,9 @@ internals:
    - `scripts/musicbrainz_workshop_kvist.sh`
    - `scripts/aggregates_tutorial_clojure.sh`
    - `scripts/aggregates_tutorial_kvist.sh`
+   - `scripts/compare_aggregates_tutorial.sh`
    - `scripts/decomposing_query_clojure.sh`
+   - `scripts/decomposing_query_kvist.sh`
 
 3. **Datomic comparison harness**
 

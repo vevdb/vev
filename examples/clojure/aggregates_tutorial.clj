@@ -8,7 +8,7 @@
 
 ;; Port source of truth:
 ;; build/upstream/day-of-datomic/tutorial/aggregates.clj
-;; Section: file top through largest 3 aggregate query.
+;; Section: file top through schema attribute/value-type aggregate query.
 ;; Fixture:
 ;; build/upstream/day-of-datomic/resources/day-of-datomic/bigger-than-pluto.edn
 
@@ -60,6 +60,52 @@
     :with ?e
     :where [?e :object/meanRadius ?radius]])
 
+(def five-random-object-names-query
+  '[:find (rand 5 ?name) .
+    :with ?e
+    :where [?e :object/name ?name]])
+
+(def five-sampled-object-names-query
+  '[:find (sample 5 ?name) .
+    :with ?e
+    :where [?e :object/name ?name]])
+
+(def schema-name-average-length-query
+  '[:find (avg ?length) .
+    :with ?e
+    :where
+    [?e :db/ident ?ident]
+    [(name ?ident) ?name]
+    [(count ?name) ?length]])
+
+(def schema-name-modes-query
+  '[:find (datomic.samples.repl/modes ?length) .
+    :with ?e
+    :where
+    [?e :db/ident ?ident]
+    [(name ?ident) ?name]
+    [(count ?name) ?length]])
+
+(def schema-attribute-value-type-query
+  '[:find (count ?a) (count-distinct ?vt)
+    :where
+    [?a :db/ident ?ident]
+    [?a :db/valueType ?vt]])
+
+(defn schema-name-modes
+  [coll]
+  (->> (frequencies coll)
+       (reduce
+        (fn [[modes ct] [k v]]
+          (cond
+            (< v ct) [modes ct]
+            (= v ct) [(conj modes k) ct]
+            (> v ct) [#{k} v]))
+        [#{} 2])
+       first))
+
+(intern (create-ns 'datomic.samples.repl) 'modes schema-name-modes)
+
 (defn- remove-store! [uri]
   (doseq [suffix ["" "-wal" "-shm"]]
     (let [file (io/file (str uri suffix))]
@@ -81,8 +127,9 @@
 (defn- aggregate-fact-form? [form]
   (and (vector? form)
        (some #(and (map? %)
-                   (contains? % :object/name)
-                   (contains? % :object/meanRadius))
+                   (or (contains? % :db/ident)
+                       (and (contains? % :object/name)
+                            (contains? % :object/meanRadius))))
              form)))
 
 (defn- read-upstream-forms []
@@ -125,6 +172,11 @@
           random-object-name (d/q random-object-name-query db)
           smallest-three-radii (d/q smallest-three-radii-query db)
           largest-three-radii (d/q largest-three-radii-query db)
+          five-random-object-names (d/q five-random-object-names-query db)
+          five-sampled-object-names (d/q five-sampled-object-names-query db)
+          schema-name-average-length (d/q schema-name-average-length-query db)
+          schema-name-modes (d/q schema-name-modes-query db)
+          schema-attribute-value-types (d/q schema-attribute-value-type-query db)
           object-names (set (map first (d/q object-names-query db)))]
       (assert (= 17 object-count))
       (assert (= 696000.0 largest-radius))
@@ -136,6 +188,18 @@
       (assert (contains? object-names random-object-name))
       (assert (= [1163.0 1353.4 1561.0] smallest-three-radii))
       (assert (= [696000.0 69911.0 58232.0] largest-three-radii))
+      (assert (seq? five-random-object-names))
+      (assert (= 5 (count five-random-object-names)))
+      (assert (every? string? five-random-object-names))
+      (assert (every? object-names five-random-object-names))
+      (assert (vector? five-sampled-object-names))
+      (assert (= 5 (count five-sampled-object-names)))
+      (assert (= 5 (count (set five-sampled-object-names))))
+      (assert (every? string? five-sampled-object-names))
+      (assert (every? object-names five-sampled-object-names))
+      (assert (close-enough? 6.666666666666667 schema-name-average-length 0.0000001))
+      (assert (= #{} schema-name-modes))
+      (assert (= #{[3 2]} schema-attribute-value-types))
       {:object-count object-count
        :largest-radius largest-radius
        :smallest-radius smallest-radius
@@ -144,4 +208,9 @@
        :stddev-radius stddev-radius
        :random-object-name random-object-name
        :smallest-three-radii smallest-three-radii
-       :largest-three-radii largest-three-radii})))
+       :largest-three-radii largest-three-radii
+       :five-random-object-names five-random-object-names
+       :five-sampled-object-names five-sampled-object-names
+       :schema-name-average-length schema-name-average-length
+       :schema-name-modes schema-name-modes
+       :schema-attribute-value-types schema-attribute-value-types})))

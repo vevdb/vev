@@ -19,10 +19,12 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.lang.ref.Cleaner;
 import java.util.UUID;
 
@@ -812,6 +814,14 @@ public final class Vev {
                 }
                 yield items;
             }
+            case 11 -> {
+                int count = (int) valueItemCount.invoke(value);
+                Set<Object> items = new LinkedHashSet<>(count);
+                for (int i = 0; i < count; i++) {
+                    items.add(valueToJava((MemorySegment) valueItem.invoke(value, i)));
+                }
+                yield items;
+            }
             case 9 -> {
                 int count = (int) valueMapCount.invoke(value);
                 List<Entry> entries = new ArrayList<>(count);
@@ -1033,6 +1043,15 @@ public final class Vev {
                 appendEdn(out, items.get(i));
             }
             out.append("]");
+        } else if (value instanceof Set<?> items) {
+            out.append("#{");
+            int index = 0;
+            for (Object item : items) {
+                if (index > 0) out.append(" ");
+                appendEdn(out, item);
+                index++;
+            }
+            out.append("}");
         } else {
             throw new IllegalArgumentException("unsupported EDN input value: " + value);
         }

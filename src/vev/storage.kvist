@@ -11335,6 +11335,34 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (delete-temp-resident-store-report-source report)
     out))
 
+(defn initial-source-overlay-report-from-resident-report [before: Store-DB, report: Tx-Report] -> Store-Tx-Report
+  (let [after-snapshot (shared-db-snapshot-from-db report.db-after sqlite-db-source-default-page-size)
+        tempids (arr.into [dynamic]Tempid (slice report.tempids 0))]
+    (Store-Tx-Report {ok: report.ok
+                      error: report.error
+                      db-before: (retain-store-db before)
+                      db-after: (Store-DB {kind: .Shared-Snapshot shared-snapshot: after-snapshot})
+                      tx-data: (clone-datoms report.tx-data)
+                      tx: report.tx
+                      tx-meta: (clone-tx-meta (slice report.tx-meta 0))
+                      tempids: tempids
+                      source-append-metadata-known: false
+                      source-new-entities-after-existing: false
+                      source-eavt-append-mode: false
+                      source-aevt-append-mode: false
+                      source-avet-append-mode: false
+                      source-vaet-append-mode: false
+                      source-published-root-known: false
+                      source-published-root: (SQLite-Durable-Published-Root {})})))
+
+(defn initial-source-overlay-report-from-tx-data [before: Store-DB, tx-data: []Tx-Data] -> Store-Tx-Report
+  (let [empty-db (build-db (make [dynamic]Datom))
+        resident-report (with-tx-data empty-db tx-data)
+        report (initial-source-overlay-report-from-resident-report before resident-report)]
+    (delete-owned-db empty-db)
+    (delete-store-db-temp-tx-report resident-report)
+    report))
+
 (defn failed-sqlite-store-tx-report [store: ^SQLite-Conn, error: string] -> Store-Tx-Report
   (let [[snapshot snapshot-ok _] (sqlite-store-db-current-root-cached store)]
     (if snapshot-ok
@@ -11404,7 +11432,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 
 (defn transact-sqlite-store-report-initial-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> Store-Tx-Report
   (let [before (empty-shared-store-db-for-sqlite-bootstrap)
-        overlay-report (with-store-db-report-tx-data (addr before) tx-data)]
+        overlay-report (initial-source-overlay-report-from-tx-data before tx-data)]
     (close-store-db before)
     (sqlite-commit-initial-source-overlay-report store overlay-report)))
 

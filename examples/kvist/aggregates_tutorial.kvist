@@ -3,6 +3,7 @@
 
 (package main)
 
+(import arr "kvist:arr")
 (import fmt "core:fmt")
 (import math "core:math")
 (import os "core:os")
@@ -10,7 +11,7 @@
 
 // Port source of truth:
 // build/upstream/day-of-datomic/tutorial/aggregates.clj
-// Section: file top through largest 3 aggregate query.
+// Section: file top through schema attribute/value-type aggregate query.
 // Fixture:
 // build/upstream/day-of-datomic/resources/day-of-datomic/bigger-than-pluto.edn
 
@@ -50,6 +51,30 @@
                 (= (count result.result.rows[0].values) 1)
                 (= result.result.rows[0].values[0].kind .Float)
                 (<= (math.abs (- actual expected)) tolerance))]
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=1 error=%s\n" label ok (count result.result.rows) result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
+
+(defn validate-empty-set-result! [label: string, result: vev.Query-Result, passed: ^bool]
+  (let [ok (and result.result.ok
+                (= (count result.result.rows) 1)
+                (= (count result.result.rows[0].values) 1)
+                (= result.result.rows[0].values[0].kind .Set)
+                (= (count result.result.rows[0].values[0].items) 0))]
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=1 error=%s\n" label ok (count result.result.rows) result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result result)))
+
+(defn validate-int-int-row-result! [label: string, result: vev.Query-Result, expected-left: i64, expected-right: i64, passed: ^bool]
+  (let [ok (and result.result.ok
+                (= (count result.result.rows) 1)
+                (= (count result.result.rows[0].values) 2)
+                (= result.result.rows[0].values[0].kind .Int)
+                (= result.result.rows[0].values[1].kind .Int)
+                (= result.result.rows[0].values[0].int-value expected-left)
+                (= result.result.rows[0].values[1].int-value expected-right))]
     (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=1 error=%s\n" label ok (count result.result.rows) result.result.error)
     (when (not ok)
       (set! passed^ false))
@@ -100,6 +125,69 @@
     (when (not ok)
       (set! passed^ false))
     (vev.delete-query-result result)))
+
+(defn validate-random-name-vector-result! [label: string, random-result: vev.Query-Result, names-result: vev.Query-Result, expected-count: int, passed: ^bool]
+  (let [ok-base (and random-result.result.ok
+                     names-result.result.ok
+                     (= (count random-result.result.rows) 1)
+                     (= (count random-result.result.rows[0].values) 1)
+                     (= random-result.result.rows[0].values[0].kind .Vector)
+                     (= (count random-result.result.rows[0].values[0].items) expected-count))
+        ok ok-base]
+    (when ok-base
+      (for [item random-result.result.rows[0].values[0].items]
+        (when (or (not (= item.kind .String))
+                  (not (result-has-string? names-result item.text)))
+          (set! ok false))))
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=1 error=%s\n" label ok (count random-result.result.rows) random-result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result random-result)
+    (vev.delete-query-result names-result)))
+
+(defn validate-sampled-name-vector-result! [label: string, sample-result: vev.Query-Result, names-result: vev.Query-Result, expected-count: int, passed: ^bool]
+  (let [ok-base (and sample-result.result.ok
+                     names-result.result.ok
+                     (= (count sample-result.result.rows) 1)
+                     (= (count sample-result.result.rows[0].values) 1)
+                     (= sample-result.result.rows[0].values[0].kind .Vector)
+                     (= (count sample-result.result.rows[0].values[0].items) expected-count))
+        ok ok-base]
+    (when ok-base
+      (let [items sample-result.result.rows[0].values[0].items]
+        (for [i (arr.range 0 (count items))]
+          (let [item items[i]]
+            (when (or (not (= item.kind .String))
+                      (not (result-has-string? names-result item.text)))
+              (set! ok false))
+            (for [j (arr.range (+ i 1) (count items))]
+              (when (= item.text items[j].text)
+                (set! ok false)))))))
+    (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=1 error=%s\n" label ok (count sample-result.result.rows) sample-result.result.error)
+    (when (not ok)
+      (set! passed^ false))
+    (vev.delete-query-result sample-result)
+    (vev.delete-query-result names-result)))
+
+(defn schema-name-modes [values: []vev.Value] -> vev.Native-Query-Function-Result
+  (let [modes (make [dynamic]vev.Value)
+        best-count 2]
+    (for [candidate values]
+      (when (= candidate.kind .Int)
+        (let [candidate-count 0]
+          (for [value values]
+            (when (and (= value.kind .Int)
+                       (= value.int-value candidate.int-value))
+              (set! candidate-count (+ candidate-count 1))))
+          (when (= candidate-count best-count)
+            (when (not (vev.value-exists? (slice modes 0) candidate))
+              (arr.push! modes (vev.value-int candidate.int-value))))
+          (when (> candidate-count best-count)
+            (while (> (count modes) 0)
+              (arr.remove-ordered-at! modes 0))
+            (arr.push! modes (vev.value-int candidate.int-value))
+            (set! best-count candidate-count)))))
+    (vev.native-query-function-result (vev.value-set-owned modes))))
 
 (defn main []
   (defer (free_all context.allocator))
@@ -179,5 +267,60 @@
            :where [?e :object/meanRadius ?radius]]
           (addr snapshot))
         ([]f64 [696000.0 69911.0 58232.0])
+        (addr passed))
+      (validate-random-name-vector-result! "aggregate-five-random-object-names"
+        (vev.q-result-store-db
+          [:find (rand 5 ?name) .
+           :with ?e
+           :where [?e :object/name ?name]]
+          (addr snapshot))
+        (vev.q-result-store-db
+          [:find ?name
+           :where [?e :object/name ?name]]
+          (addr snapshot))
+        5
+        (addr passed))
+      (validate-sampled-name-vector-result! "aggregate-five-sampled-object-names"
+        (vev.q-result-store-db
+          [:find (sample 5 ?name) .
+           :with ?e
+           :where [?e :object/name ?name]]
+          (addr snapshot))
+        (vev.q-result-store-db
+          [:find ?name
+           :where [?e :object/name ?name]]
+          (addr snapshot))
+        5
+        (addr passed))
+      (validate-scalar-float-close-result! "aggregate-schema-name-average-length"
+        (vev.q-result-store-db
+          [:find (avg ?length) .
+           :with ?e
+           :where
+           [?e :db/ident ?ident]
+           [(name ?ident) ?name]
+           [(count ?name) ?length]]
+          (addr snapshot))
+        6.666666666666667 0.0000001
+        (addr passed))
+      (validate-empty-set-result! "aggregate-schema-name-modes"
+        (vev.q-result-store-db-with-fns
+          [:find (datomic.samples.repl/modes ?length) .
+           :with ?e
+           :where
+           [?e :db/ident ?ident]
+           [(name ?ident) ?name]
+           [(count ?name) ?length]]
+          (addr snapshot)
+          ([]vev.Native-Query-Fn [(vev.query-aggregate-fn "datomic.samples.repl/modes" schema-name-modes)]))
+        (addr passed))
+      (validate-int-int-row-result! "aggregate-schema-attribute-value-types"
+        (vev.q-result-store-db
+          [:find (count ?a) (count-distinct ?vt)
+           :where
+           [?a :db/ident ?ident]
+           [?a :db/valueType ?vt]]
+          (addr snapshot))
+        3 2
         (addr passed)))
     (fmt.printf "source=kvist section=summary ok=%v\n" passed)))
