@@ -1189,7 +1189,11 @@ public final class Vev {
     public record MapValue(List<Entry> entries) {
         public Object get(String key) {
             for (Entry entry : entries) {
-                if (key.equals(entry.key())) return entry.value();
+                Object entryKey = entry.key();
+                if (key.equals(entryKey)
+                        || (entryKey instanceof Keyword keyword && key.equals(keyword.text()))) {
+                    return entry.value();
+                }
             }
             return null;
         }

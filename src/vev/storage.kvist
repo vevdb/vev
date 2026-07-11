@@ -6728,6 +6728,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   indexes: SQLite-Index-Snapshot
   datom-stmt: rawptr
   datom-cache-log-indexes: [dynamic]int
+  datom-cache-valids: [dynamic]bool
   datom-cache-datoms: [dynamic]Datom
   basis-tx: u64
   root-row-id: u64
@@ -6736,30 +6737,50 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   path: string
 })
 
+(def sqlite-db-snapshot-datom-cache-capacity 512)
+
 (defn sqlite-db-snapshot-empty-datom-cache-log-indexes [] -> [dynamic]int
-  (make [dynamic]int 0 128))
+  (arr.repeat sqlite-db-snapshot-datom-cache-capacity -1))
+
+(defn sqlite-db-snapshot-empty-datom-cache-valids [] -> [dynamic]bool
+  (arr.repeat sqlite-db-snapshot-datom-cache-capacity false))
 
 (defn sqlite-db-snapshot-empty-datom-cache-datoms [] -> [dynamic]Datom
-  (make [dynamic]Datom 0 128))
+  (arr.repeat sqlite-db-snapshot-datom-cache-capacity (Datom {})))
+
+(defn sqlite-db-snapshot-datom-cache-slot [log-index: int] -> int
+  (let [slot (% log-index sqlite-db-snapshot-datom-cache-capacity)]
+    (if (< slot 0)
+      (+ slot sqlite-db-snapshot-datom-cache-capacity)
+      slot)))
 
 (defn sqlite-db-snapshot-cache-find-datom [snapshot: ^SQLite-DB-Snapshot, log-index: int] -> [datom: Datom, found: bool]
-  (for [cached-log-index index snapshot^.datom-cache-log-indexes]
-    (when (= cached-log-index log-index)
-      (return (datom-owned snapshot^.datom-cache-datoms[index]) true)))
+  (let [slot (sqlite-db-snapshot-datom-cache-slot log-index)]
+    (when (and (< slot (count snapshot^.datom-cache-valids))
+               snapshot^.datom-cache-valids[slot]
+               (= snapshot^.datom-cache-log-indexes[slot] log-index))
+      (return (datom-owned snapshot^.datom-cache-datoms[slot]) true)))
   (return (Datom {}) false))
 
 (defn sqlite-db-snapshot-cache-store-datom! [snapshot: ^SQLite-DB-Snapshot, log-index: int, datom: Datom]
-  (for [cached-log-index index snapshot^.datom-cache-log-indexes]
-    (when (= cached-log-index log-index)
-      (delete-owned-datom snapshot^.datom-cache-datoms[index])
-      (set! snapshot^.datom-cache-datoms[index] (datom-owned datom))
-      (return)))
-  (when (>= (count snapshot^.datom-cache-log-indexes) 128)
-    (delete-owned-datom snapshot^.datom-cache-datoms[0])
-    (arr.remove-ordered-at! snapshot^.datom-cache-log-indexes 0)
-    (arr.remove-ordered-at! snapshot^.datom-cache-datoms 0))
-  (arr.push! snapshot^.datom-cache-log-indexes log-index)
-  (arr.push! snapshot^.datom-cache-datoms (datom-owned datom)))
+  (let [slot (sqlite-db-snapshot-datom-cache-slot log-index)]
+    (when (and (< slot (count snapshot^.datom-cache-valids))
+               snapshot^.datom-cache-valids[slot])
+      (delete-owned-datom snapshot^.datom-cache-datoms[slot]))
+    (set! snapshot^.datom-cache-log-indexes[slot] log-index)
+    (set! snapshot^.datom-cache-valids[slot] true)
+    (set! snapshot^.datom-cache-datoms[slot] (datom-owned datom))))
+
+(defn delete-sqlite-db-snapshot-datom-cache! [snapshot: ^SQLite-DB-Snapshot]
+  (for [valid index snapshot^.datom-cache-valids]
+    (when valid
+      (delete-owned-datom snapshot^.datom-cache-datoms[index])))
+  (delete snapshot^.datom-cache-log-indexes)
+  (delete snapshot^.datom-cache-valids)
+  (delete snapshot^.datom-cache-datoms)
+  (set! snapshot^.datom-cache-log-indexes (make [dynamic]int))
+  (set! snapshot^.datom-cache-valids (make [dynamic]bool))
+  (set! snapshot^.datom-cache-datoms (make [dynamic]Datom)))
 
 (defenum Store-Conn-Kind [
   Empty
@@ -10277,6 +10298,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (return (SQLite-DB-Snapshot {indexes: indexes
                                      datom-stmt: datom-stmt
                                      datom-cache-log-indexes: (sqlite-db-snapshot-empty-datom-cache-log-indexes)
+                                     datom-cache-valids: (sqlite-db-snapshot-empty-datom-cache-valids)
                                      datom-cache-datoms: (sqlite-db-snapshot-empty-datom-cache-datoms)
                                      basis-tx: basis-tx
                                      root-row-id: root-row-id
@@ -10297,6 +10319,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (return (SQLite-DB-Snapshot {indexes: indexes
                                      datom-stmt: datom-stmt
                                      datom-cache-log-indexes: (sqlite-db-snapshot-empty-datom-cache-log-indexes)
+                                     datom-cache-valids: (sqlite-db-snapshot-empty-datom-cache-valids)
                                      datom-cache-datoms: (sqlite-db-snapshot-empty-datom-cache-datoms)
                                      basis-tx: basis-tx
                                      root-row-id: published.root-row-id
@@ -10322,6 +10345,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
             (return (SQLite-DB-Snapshot {indexes: indexes
                                          datom-stmt: datom-stmt
                                          datom-cache-log-indexes: (sqlite-db-snapshot-empty-datom-cache-log-indexes)
+                                         datom-cache-valids: (sqlite-db-snapshot-empty-datom-cache-valids)
                                          datom-cache-datoms: (sqlite-db-snapshot-empty-datom-cache-datoms)
                                          basis-tx: basis-tx
                                          root-row-id: published.root-row-id
@@ -12978,8 +13002,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn close-sqlite-db-snapshot! [snapshot: ^SQLite-DB-Snapshot]
   (sqlite-finalize-stmt-raw snapshot^.datom-stmt)
   (close-sqlite-index-snapshot! (addr snapshot^.indexes))
-  (delete snapshot^.datom-cache-log-indexes)
-  (delete-owned-datoms snapshot^.datom-cache-datoms)
+  (delete-sqlite-db-snapshot-datom-cache! snapshot)
   (delete snapshot^.path)
   (set! snapshot^ (SQLite-DB-Snapshot {})))
 
