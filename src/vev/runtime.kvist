@@ -35092,6 +35092,34 @@
           (delete-source-index-datom-stream out-stream)
           (return (Source-Index-Datom-Stream {}) false load-error))))))
 
+(defn sqlite-index-root-bound-key-only-compare [cursor: ^SQLite-Index-Cursor, entry: int, order-text: string, values: []Value] -> [compare: int, ok: bool, matched: bool, error: string]
+  (when (not (= (count values) 1))
+    (return 0 true false ""))
+  (let [value values[0]]
+    (cond
+      (and (= order-text ":eavt")
+           (or (= value.kind .Entity)
+               (= value.kind .Int)))
+        (let [[entity entity-ok entity-error] (sqlite-load-datom-entity-by-log-index-handle-stmt cursor^.handle cursor^.datom-stmt entry)]
+          (when (not entity-ok)
+            (return 0 false true entity-error))
+          (let [expected (if (= value.kind .Entity) value.entity (u64 value.int-value))]
+            (cond
+              (< entity expected) (return -1 true true "")
+              (> entity expected) (return 1 true true "")
+              :else (return 0 true true ""))))
+      (and (or (= order-text ":aevt")
+               (= order-text ":avet"))
+           (or (= value.kind .Keyword)
+               (= value.kind .String)))
+        (let [[attr attr-ok attr-error] (sqlite-load-datom-attr-by-log-index-handle-stmt cursor^.handle cursor^.datom-stmt entry)]
+          (when (not attr-ok)
+            (return 0 false true attr-error))
+          (defer (delete attr))
+          (return (strings.compare attr value.text) true true ""))
+      :else
+        (return 0 true false ""))))
+
 (defn sqlite-index-root-overlaps-values? [cursor: ^SQLite-Index-Cursor, root-id: u64, order-text: string, values: []Value] -> [overlaps: bool, ok: bool, error: string]
   (when (= (count values) 0)
     (return true true ""))
@@ -35104,6 +35132,17 @@
           [last-entry last-ok] (parse-index-bound-entry last-bound)]
       (when (not (and first-ok last-ok))
         (return true true ""))
+      (let [[first-key-compare first-key-ok first-key-matched first-key-error] (sqlite-index-root-bound-key-only-compare cursor first-entry order-text values)]
+        (when (not first-key-ok)
+          (return false false first-key-error))
+        (when first-key-matched
+          (let [[last-key-compare last-key-ok _last-key-matched last-key-error] (sqlite-index-root-bound-key-only-compare cursor last-entry order-text values)]
+            (when (not last-key-ok)
+              (return false false last-key-error))
+            (return (and (not (< last-key-compare 0))
+                         (not (> first-key-compare 0)))
+                    true
+                    ""))))
       (let [[first-datom first-datom-ok first-datom-error] (sqlite-load-datom-by-log-index-handle-stmt cursor^.handle cursor^.datom-stmt first-entry)]
         (when (not first-datom-ok)
           (return false false first-datom-error))
@@ -35153,15 +35192,23 @@
         (when (not entry-ok)
           (delete page)
           (return low false entry-error))
-        (let [[datom datom-ok datom-error] (sqlite-load-datom-by-log-index-handle-stmt cursor^.handle cursor^.datom-stmt entry)]
-          (when (not datom-ok)
+        (let [[key-compare key-ok key-matched key-error] (sqlite-index-root-bound-key-only-compare cursor entry order-text values)]
+          (when (not key-ok)
             (delete page)
-            (return low false datom-error))
-          (let [compare (datom-index-compare-values datom order-text values)]
-            (delete-owned-datom datom)
-            (if (if upper? (<= compare 0) (< compare 0))
+            (return low false key-error))
+          (if key-matched
+            (if (if upper? (<= key-compare 0) (< key-compare 0))
               (set! low (+ mid 1))
-              (set! high mid))))))
+              (set! high mid))
+            (let [[datom datom-ok datom-error] (sqlite-load-datom-by-log-index-handle-stmt cursor^.handle cursor^.datom-stmt entry)]
+              (when (not datom-ok)
+                (delete page)
+                (return low false datom-error))
+              (let [compare (datom-index-compare-values datom order-text values)]
+                (delete-owned-datom datom)
+                (if (if upper? (<= compare 0) (< compare 0))
+                  (set! low (+ mid 1))
+                  (set! high mid))))))))
     (delete page)
     (return low true "")))
 
@@ -35358,7 +35405,7 @@
                                                  run-highs: selected-highs
                                                  run-values: (values-owned-array values)
                                                  run-order-text: order-text
-                                                 run-check-values: true
+                                                 run-check-values: false
                                                  run-index: 0
                                                  run-position: 0
                                                  run-page: (make [dynamic]int)

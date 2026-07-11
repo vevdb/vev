@@ -206,10 +206,34 @@ Important performance signal:
   SQLite clause scans borrow from the loaded cursor page instead of cloning a
   datom per candidate. Source-column result renderers now move owned strings
   from typed column buffers into result rows instead of cloning them during
-  result materialization. The next remaining cost is persisted row decode/page
-  reuse around point/range reads; the current comparison gate still matches
-  Datomic rows/fingerprints but Vev remains slower on the persisted
-  MusicBrainz data-query rows.
+  result materialization. Persisted row decode now also transfers SQLite-owned
+  attribute strings into decoded datoms instead of cloning them in both batch
+  page loads and prepared single-datom loads. Simple persisted scalar values
+  now bypass the full EDN document parser and decode directly for nil, bools,
+  integers, strings, keywords, entity wrappers, and float wrappers. The SQLite
+  retained-page cache now remembers the two most recent page lookups, avoiding
+  a linear retained-page scan for repeated adjacent or alternating root/start
+  lookups. Fresh SQLite index windows that are immediately upgraded to datom
+  pages now move their owned entry arrays into the loaded page instead of
+  cloning entries and deleting the original window. SQLite EAVT entity bounds
+  and AEVT attr bounds now use prepared key-only reads instead of loading and
+  decoding full datoms during binary search, and persisted root-range bound
+  selection uses the same key-only path for first-position entity/attr prefixes
+  before falling back to full datom comparison. Persisted root/run overlap
+  filtering also uses that key-only path for the same single-key prefixes, so
+  irrelevant runs can be skipped without decoding their first and last datoms.
+  Exact-bounded non-manifest persisted root streams now skip the redundant
+  per-datom prefix recheck after low/high index bound selection; manifest
+  streams still keep the guard until their stored-bound exactness is represented
+  directly in the stream. SQLite DB snapshots now also keep a small bounded
+  log-index datom cache behind `sqlite-db-snapshot-datom-at-log-index`, reducing
+  repeated prepared-row reads and value decode during pull/materialization and
+  current checks without changing the public API or in-memory mode. The next
+  remaining cost is
+  composite/ambiguous value fallback decode plus deeper persisted page/log-row
+  reuse and materialization around point/range reads; the current comparison
+  gate still matches Datomic rows/fingerprints but Vev remains slower on the
+  persisted MusicBrainz data-query rows.
 - the upstream `collab` query over a collection input and `%` rules now works
   from both Clojure and Kvist against the persistent MusicBrainz store. The
   Clojure request-map timeout validation uses a tighter timeout than the
@@ -429,12 +453,12 @@ internals:
      rule calls/iterations, source index scans, source operators, clause
      candidates, and output rows instead of `unsupported`.
    - current performance signal: persistent Vev is still slower than local
-     Datomic on these rows. A recent comparison run showed the slowest rows in
-     the rule/recursive and broad-filter cases, while all rows still matched by
-     count/fingerprint. This is the next real bottleneck; do not mark the gate
-     complete until the representative rows are at least close to Datomic or
-     each remaining slow row has a specific engine/storage explanation and
-     planned fix.
+     Datomic on these rows. The current comparison run still matches every row
+     by count/fingerprint, with the slowest relative rows in the broad
+     album/year, pre-1970, and recursive collaboration cases. This is the next
+     real bottleneck; do not mark the gate complete until the representative
+     rows are at least close to Datomic or each remaining slow row has a
+     specific engine/storage explanation and planned fix.
 
 2. **MusicBrainz import and fixture setup**
 
@@ -502,11 +526,16 @@ internals:
      produced. Exact AVET joins use the shared persisted stream path, and that
      stream now borrows datoms from retained SQLite pages instead of cloning an
      owned datom for every run-range row; ordinary no-retraction SQLite cursor
-     streams also borrow from their loaded cursor page. The next fix should
-     keep lowering stream/page and result materialization cost rather than
-     adding another query-specific operator variant. Remaining cost is
-     primarily loading/decoding persisted datom rows, reusing loaded pages
-     across neighboring operators, and materializing host/query result values.
+     streams also borrow from their loaded cursor page. Fresh SQLite root
+     windows that are upgraded to datom pages now transfer their owned entry
+     arrays directly into the page instead of cloning. EAVT entity-range and
+     AEVT attr-range binary searches now read only the key column they compare,
+     avoiding unnecessary persisted value decoding in those generic bounds.
+     The next fix should keep lowering stream/page and result materialization
+     cost rather than adding another query-specific operator variant.
+     Remaining cost is primarily loading/decoding persisted datom rows, reusing
+     loaded pages across neighboring operators, and materializing host/query
+     result values.
    - look for reusable typed/source operator paths that can batch adjacent
      exact ranges, reuse loaded persisted pages across neighboring point/range
      reads, or fuse adjacent ref/value joins without hard-coding MusicBrainz

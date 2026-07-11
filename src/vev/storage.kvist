@@ -3617,6 +3617,62 @@ sqlite_step_prepared_datom_by_log_index_parts_raw :: proc(handle: rawptr, stmt_h
     return 0, \"\", \"\", 0, false, false, sqlite_error_text(db, \"sqlite datom log-index read failed\")
 }
 
+sqlite_step_prepared_datom_entity_by_log_index_raw :: proc(handle: rawptr, stmt_handle: rawptr, log_index: i64) -> (u64, bool, string) {
+    if handle == nil {
+        return 0, false, \"sqlite handle was nil\"
+    }
+    if stmt_handle == nil {
+        return 0, false, \"sqlite statement was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt := (^SQLite3_Stmt)(stmt_handle)
+    _ = sqlite3_reset(stmt)
+    _ = sqlite3_clear_bindings(stmt)
+    if sqlite3_bind_int64(stmt, 1, log_index) != SQLITE_OK {
+        return 0, false, sqlite_error_text(db, \"sqlite bind datom log-index entity read failed\")
+    }
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_ROW {
+        return u64(sqlite3_column_int64(stmt, 0)), true, \"\"
+    }
+    if rc == SQLITE_DONE {
+        return 0, false, \"sqlite datom log-index not found\"
+    }
+    return 0, false, sqlite_error_text(db, \"sqlite datom log-index entity read failed\")
+}
+
+sqlite_step_prepared_datom_attr_by_log_index_raw :: proc(handle: rawptr, stmt_handle: rawptr, log_index: i64) -> (string, bool, string) {
+    if handle == nil {
+        return \"\", false, \"sqlite handle was nil\"
+    }
+    if stmt_handle == nil {
+        return \"\", false, \"sqlite statement was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt := (^SQLite3_Stmt)(stmt_handle)
+    _ = sqlite3_reset(stmt)
+    _ = sqlite3_clear_bindings(stmt)
+    if sqlite3_bind_int64(stmt, 1, log_index) != SQLITE_OK {
+        return \"\", false, sqlite_error_text(db, \"sqlite bind datom log-index attr read failed\")
+    }
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_ROW {
+        a_raw := sqlite3_column_text(stmt, 1)
+        if a_raw == nil {
+            return \"\", false, \"sqlite datom row had null attr text\"
+        }
+        a_text, a_err := strings.clone_from_cstring(a_raw)
+        if a_err != nil {
+            return \"\", false, \"failed to clone sqlite datom attr\"
+        }
+        return a_text, true, \"\"
+    }
+    if rc == SQLITE_DONE {
+        return \"\", false, \"sqlite datom log-index not found\"
+    }
+    return \"\", false, sqlite_error_text(db, \"sqlite datom log-index attr read failed\")
+}
+
 sqlite_load_datoms_by_log_indexes_parts_raw :: proc(handle: rawptr, entries: []int) -> ([dynamic]int, [dynamic]u64, [dynamic]string, [dynamic]string, [dynamic]u64, [dynamic]bool, bool, string) {
     ordinals := make([dynamic]int, 0, len(entries))
     entities := make([dynamic]u64, 0, len(entries))
@@ -6535,6 +6591,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   refs: [dynamic]int
   hits: int
   misses: int
+  last-index: int
+  last-valid: bool
+  previous-index: int
+  previous-valid: bool
 })
 
 (defstruct SQLite-Index-Page-Cache {
@@ -6597,16 +6657,44 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     0
     cache.state^.misses))
 
+(defn sqlite-index-page-cache-remember-hit! [cache: SQLite-Index-Page-Cache, index: int]
+  (when (= cache.state nil)
+    (return))
+  (when (or (not cache.state^.last-valid)
+            (not (= cache.state^.last-index index)))
+    (set! cache.state^.previous-index cache.state^.last-index)
+    (set! cache.state^.previous-valid cache.state^.last-valid)
+    (set! cache.state^.last-index index)
+    (set! cache.state^.last-valid true)))
+
 (defn sqlite-index-page-cache-find-retained [cache: SQLite-Index-Page-Cache, root-id: u64, manifest-id: u64, start: int] -> [page: SQLite-Loaded-Index-Page, found: bool]
   (when (= cache.state nil)
     (return (SQLite-Loaded-Index-Page {}) false))
+  (when (and cache.state^.last-valid
+             (>= cache.state^.last-index 0)
+             (< cache.state^.last-index (count cache.state^.pages))
+             (= cache.state^.root-ids[cache.state^.last-index] root-id)
+             (= cache.state^.manifest-ids[cache.state^.last-index] manifest-id)
+             (= cache.state^.starts[cache.state^.last-index] start))
+    (mut! cache.state^.hits += 1)
+    (return (retain-sqlite-loaded-index-page cache.state^.pages[cache.state^.last-index]) true))
+  (when (and cache.state^.previous-valid
+             (>= cache.state^.previous-index 0)
+             (< cache.state^.previous-index (count cache.state^.pages))
+             (= cache.state^.root-ids[cache.state^.previous-index] root-id)
+             (= cache.state^.manifest-ids[cache.state^.previous-index] manifest-id)
+             (= cache.state^.starts[cache.state^.previous-index] start))
+    (sqlite-index-page-cache-remember-hit! cache cache.state^.previous-index)
+    (mut! cache.state^.hits += 1)
+    (return (retain-sqlite-loaded-index-page cache.state^.pages[cache.state^.last-index]) true))
   (for [candidate index cache.state^.pages]
     (when (and (= cache.state^.root-ids[index] root-id)
                (= cache.state^.manifest-ids[index] manifest-id)
                (= cache.state^.starts[index] start))
-      (set! cache.state^.hits (+ cache.state^.hits 1))
+      (sqlite-index-page-cache-remember-hit! cache index)
+      (mut! cache.state^.hits += 1)
       (return (retain-sqlite-loaded-index-page candidate) true)))
-  (set! cache.state^.misses (+ cache.state^.misses 1))
+  (mut! cache.state^.misses += 1)
   (return (SQLite-Loaded-Index-Page {}) false))
 
 (defn sqlite-index-page-cache-store! [cache: ^SQLite-Index-Page-Cache, root-id: u64, manifest-id: u64, start: int, page: SQLite-Loaded-Index-Page]
@@ -6618,11 +6706,13 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
                (= cache^.state^.starts[index] start))
       (release-sqlite-loaded-index-page! cache^.state^.pages[index])
       (set! cache^.state^.pages[index] (retain-sqlite-loaded-index-page page))
+      (sqlite-index-page-cache-remember-hit! cache^ index)
       (return)))
   (arr.push! cache^.state^.root-ids root-id)
   (arr.push! cache^.state^.manifest-ids manifest-id)
   (arr.push! cache^.state^.starts start)
-  (arr.push! cache^.state^.pages (retain-sqlite-loaded-index-page page)))
+  (arr.push! cache^.state^.pages (retain-sqlite-loaded-index-page page))
+  (sqlite-index-page-cache-remember-hit! cache^ (- (count cache^.state^.pages) 1)))
 
 (defstruct SQLite-Index-Snapshot {
   handle: rawptr
@@ -6637,12 +6727,39 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defstruct SQLite-DB-Snapshot {
   indexes: SQLite-Index-Snapshot
   datom-stmt: rawptr
+  datom-cache-log-indexes: [dynamic]int
+  datom-cache-datoms: [dynamic]Datom
   basis-tx: u64
   root-row-id: u64
   datom-count: int
   has-retractions: bool
   path: string
 })
+
+(defn sqlite-db-snapshot-empty-datom-cache-log-indexes [] -> [dynamic]int
+  (make [dynamic]int 0 128))
+
+(defn sqlite-db-snapshot-empty-datom-cache-datoms [] -> [dynamic]Datom
+  (make [dynamic]Datom 0 128))
+
+(defn sqlite-db-snapshot-cache-find-datom [snapshot: ^SQLite-DB-Snapshot, log-index: int] -> [datom: Datom, found: bool]
+  (for [cached-log-index index snapshot^.datom-cache-log-indexes]
+    (when (= cached-log-index log-index)
+      (return (datom-owned snapshot^.datom-cache-datoms[index]) true)))
+  (return (Datom {}) false))
+
+(defn sqlite-db-snapshot-cache-store-datom! [snapshot: ^SQLite-DB-Snapshot, log-index: int, datom: Datom]
+  (for [cached-log-index index snapshot^.datom-cache-log-indexes]
+    (when (= cached-log-index log-index)
+      (delete-owned-datom snapshot^.datom-cache-datoms[index])
+      (set! snapshot^.datom-cache-datoms[index] (datom-owned datom))
+      (return)))
+  (when (>= (count snapshot^.datom-cache-log-indexes) 128)
+    (delete-owned-datom snapshot^.datom-cache-datoms[0])
+    (arr.remove-ordered-at! snapshot^.datom-cache-log-indexes 0)
+    (arr.remove-ordered-at! snapshot^.datom-cache-datoms 0))
+  (arr.push! snapshot^.datom-cache-log-indexes log-index)
+  (arr.push! snapshot^.datom-cache-datoms (datom-owned datom)))
 
 (defenum Store-Conn-Kind [
   Empty
@@ -8702,46 +8819,61 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (delete value))
   (delete values))
 
-(defn sqlite-loaded-index-page-with-datoms [handle: rawptr, stmt: rawptr, entries: []int, start: int, end: int] -> [page: SQLite-Loaded-Index-Page, ok: bool, error: string]
+(defn delete-owned-strings-array-with-moved [values: [dynamic]string, moved: [dynamic]bool]
+  (for [value index values]
+    (when (or (>= index (count moved))
+              (not moved[index]))
+      (delete value)))
+  (delete values)
+  (delete moved))
+
+(defn sqlite-loaded-index-page-with-owned-datom-entries [handle: rawptr, stmt: rawptr, owned-entries: [dynamic]int, start: int, end: int] -> [page: SQLite-Loaded-Index-Page, ok: bool, error: string]
   (discard stmt)
-  (let [owned-entries (arr.into [dynamic]int entries)
-        datoms (make [dynamic]Datom 0 (count entries))
+  (let [entry-count (count owned-entries)
+        entries (slice owned-entries 0)
+        datoms (make [dynamic]Datom 0 entry-count)
         [ordinals entities attrs value-texts txs added batch-ok batch-error] (sqlite-load-datoms-by-log-indexes-parts-raw handle entries)]
     (defer (delete ordinals))
     (defer (delete entities))
-    (defer (delete-owned-strings-array attrs))
-    (defer (delete-owned-strings-array value-texts))
-    (defer (delete txs))
-    (defer (delete added))
-    (when (not batch-ok)
-      (delete owned-entries)
-      (delete-owned-datoms datoms)
-      (return (SQLite-Loaded-Index-Page {}) false batch-error))
-    (when (not (= (count ordinals) (count entries)))
-      (delete owned-entries)
-      (delete-owned-datoms datoms)
-      (return (SQLite-Loaded-Index-Page {}) false "sqlite batch datom page did not return every requested log index"))
-    (for [_ index entries]
-      (when (or (not (= ordinals[index] index))
-                (>= index (count entities))
-                (>= index (count attrs))
-                (>= index (count value-texts))
-                (>= index (count txs))
-                (>= index (count added)))
+    (let [moved-attrs (arr.repeat (count attrs) false)]
+      (defer (delete-owned-strings-array-with-moved attrs moved-attrs))
+      (defer (delete-owned-strings-array value-texts))
+      (defer (delete txs))
+      (defer (delete added))
+      (when (not batch-ok)
         (delete owned-entries)
         (delete-owned-datoms datoms)
-        (return (SQLite-Loaded-Index-Page {}) false "sqlite batch datom page returned rows out of order"))
-      (let [[value value-ok value-error] (value-from-owned-serial-text value-texts[index])]
-        (when (not value-ok)
+        (return (SQLite-Loaded-Index-Page {}) false batch-error))
+      (when (not (= (count ordinals) entry-count))
+        (delete owned-entries)
+        (delete-owned-datoms datoms)
+        (return (SQLite-Loaded-Index-Page {}) false "sqlite batch datom page did not return every requested log index"))
+      (for [_ index entries]
+        (when (or (not (= ordinals[index] index))
+                  (>= index (count entities))
+                  (>= index (count attrs))
+                  (>= index (count value-texts))
+                  (>= index (count txs))
+                  (>= index (count added)))
           (delete owned-entries)
           (delete-owned-datoms datoms)
-          (return (SQLite-Loaded-Index-Page {}) false value-error))
-        (arr.push! datoms (Datom {e: entities[index]
-                                  a: (string-owned attrs[index])
-                                  v: value
-                                  tx: txs[index]
-                                  added: added[index]}))))
-    (return (sqlite-loaded-index-page-from-entries-and-datoms owned-entries datoms start end) true "")))
+          (return (SQLite-Loaded-Index-Page {}) false "sqlite batch datom page returned rows out of order"))
+        (let [[value value-ok value-error] (value-from-owned-serial-text value-texts[index])]
+          (when (not value-ok)
+            (delete owned-entries)
+            (delete-owned-datoms datoms)
+            (return (SQLite-Loaded-Index-Page {}) false value-error))
+          (set! moved-attrs[index] true)
+          (arr.push! datoms (Datom {e: entities[index]
+                                    a: attrs[index]
+                                    v: value
+                                    tx: txs[index]
+                                    added: added[index]}))))
+      (return (sqlite-loaded-index-page-from-entries-and-datoms owned-entries datoms start end) true ""))))
+
+(defn sqlite-loaded-index-page-with-datoms [handle: rawptr, stmt: rawptr, entries: []int, start: int, end: int] -> [page: SQLite-Loaded-Index-Page, ok: bool, error: string]
+  (let [owned-entries (arr.into [dynamic]int entries)]
+    (sqlite-loaded-index-page-with-owned-datom-entries handle stmt owned-entries start end)))
 
 (defn sqlite-index-root-ordered-datom-at-shared-cache [handle: rawptr, stmt: rawptr, root-id: u64, index: int, row-count: int, page-size: int, page-cache: ^SQLite-Index-Page-Cache, page: ^[dynamic]int, page-start: ^int, page-end: ^int] -> [entry: int, datom: Datom, ok: bool, error: string]
   (when (or (< index 0)
@@ -8789,8 +8921,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (let [[window _base page-ok page-error] (sqlite-index-root-ordered-window handle root-id next-page-start page-size)]
         (when (not page-ok)
           (return 0 (Datom {}) false page-error))
-        (let [[loaded-page loaded-ok loaded-error] (sqlite-loaded-index-page-with-datoms handle stmt (slice window 0) next-page-start (min (+ next-page-start (count window)) row-count))]
-          (delete window)
+        (let [loaded-page-end (min (+ next-page-start (count window)) row-count)
+              [loaded-page loaded-ok loaded-error] (sqlite-loaded-index-page-with-owned-datom-entries handle stmt window next-page-start loaded-page-end)]
           (when (not loaded-ok)
             (return 0 (Datom {}) false loaded-error))
           (sqlite-index-page-cache-store! page-cache root-id 0 next-page-start loaded-page)
@@ -8843,8 +8975,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (let [[window _base page-ok page-error] (sqlite-index-root-ordered-window handle root-id next-page-start page-size)]
         (when (not page-ok)
           (return 0 0 false page-error))
-        (let [[loaded-page loaded-ok loaded-error] (sqlite-loaded-index-page-with-datoms handle stmt (slice window 0) next-page-start (min (+ next-page-start (count window)) row-count))]
-          (delete window)
+        (let [loaded-page-end (min (+ next-page-start (count window)) row-count)
+              [loaded-page loaded-ok loaded-error] (sqlite-loaded-index-page-with-owned-datom-entries handle stmt window next-page-start loaded-page-end)]
           (when (not loaded-ok)
             (return 0 0 false loaded-error))
           (sqlite-index-page-cache-store! page-cache root-id 0 next-page-start loaded-page)
@@ -8976,12 +9108,18 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (let [[entity attr value-text tx added loaded-ok loaded-error] (sqlite-step-prepared-datom-by-log-index-parts-raw handle stmt (i64 log-index))]
     (when (not loaded-ok)
       (return (Datom {}) false loaded-error))
-    (defer (delete attr))
     (defer (delete value-text))
     (let [[value value-ok value-error] (value-from-owned-serial-text value-text)]
       (when (not value-ok)
+        (delete attr)
         (return (Datom {}) false value-error))
-      (return (Datom {e: entity a: (string-owned attr) v: value tx: tx added: added}) true ""))))
+      (return (Datom {e: entity a: attr v: value tx: tx added: added}) true ""))))
+
+(defn sqlite-load-datom-entity-by-log-index-handle-stmt [handle: rawptr, stmt: rawptr, log-index: int] -> [entity: u64, ok: bool, error: string]
+  (sqlite-step-prepared-datom-entity-by-log-index-raw handle stmt (i64 log-index)))
+
+(defn sqlite-load-datom-attr-by-log-index-handle-stmt [handle: rawptr, stmt: rawptr, log-index: int] -> [attr: string, ok: bool, error: string]
+  (sqlite-step-prepared-datom-attr-by-log-index-raw handle stmt (i64 log-index)))
 
 (defn delete-active-datoms! [datoms: ^[dynamic]Datom, active: ^[dynamic]bool]
   (for [index (arr.range 0 (count active^))]
@@ -9911,7 +10049,82 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (delete doc.nodes)
       (return parsed-datom parsed-ok parsed-error))))
 
+(defn serialized-simple-string-value [text: string] -> [value: Value, ok: bool, matched: bool, error: string]
+  (let [n (kstr.count text)]
+    (when (or (< n 2)
+              (not (= (kstr.get text 0) 34))
+              (not (= (kstr.get text (- n 1)) 34)))
+      (return (Value {}) false false ""))
+    (let [cursor 1
+          escaped false]
+      (while (< cursor (- n 1))
+        (let [ch (kstr.get text cursor)]
+          (cond
+            (= ch 34) (return (Value {}) false true "unexpected quote in serialized string value")
+            (= ch 92)
+              (do
+                (set! escaped true)
+                (set! cursor (+ cursor 2)))
+            :else
+              (set! cursor (+ cursor 1)))))
+      (when (> cursor (- n 1))
+        (return (Value {}) false true "unterminated escape in serialized string value"))
+      (let [body (kstr.slice text 1 (- n 1))]
+        (if escaped
+          (return (value-string (kstr.unescape body)) true true "")
+          (return (value-string (string-owned body)) true true ""))))))
+
+(defn serialized-simple-entity-value [text: string] -> [value: Value, ok: bool, matched: bool, error: string]
+  (let [prefix "[:vev/entity "
+        suffix "]"
+        n (kstr.count text)
+        prefix-n (kstr.count prefix)]
+    (when (not (and (storage-string-starts-with? text prefix)
+                    (> n (+ prefix-n (kstr.count suffix)))
+                    (= (kstr.get text (- n 1)) 93)))
+      (return (Value {}) false false ""))
+    (let [payload (kstr.slice text prefix-n (- n 1))
+          [parsed parsed-ok] (strconv.parse_int payload)]
+      (if (and parsed-ok (>= parsed 0))
+        (return (value-entity (u64 parsed)) true true "")
+        (return (Value {}) false true "invalid serialized entity value")))))
+
+(defn serialized-simple-float-value [text: string] -> [value: Value, ok: bool, matched: bool, error: string]
+  (let [prefix "[:vev/float \""
+        n (kstr.count text)
+        prefix-n (kstr.count prefix)]
+    (when (not (and (storage-string-starts-with? text prefix)
+                    (> n (+ prefix-n 2))
+                    (= (kstr.get text (- n 2)) 34)
+                    (= (kstr.get text (- n 1)) 93)))
+      (return (Value {}) false false ""))
+    (let [payload (kstr.slice text prefix-n (- n 2))
+          [parsed parsed-ok] (serializable-float-from-text payload)]
+      (if parsed-ok
+        (return (value-float parsed) true true "")
+        (return (Value {}) false true "invalid serialized float value")))))
+
+(defn serialized-simple-value [text: string] -> [value: Value, ok: bool, matched: bool, error: string]
+  (cond
+    (= text "nil") (return (value-nil) true true "")
+    (= text "true") (return (value-bool true) true true "")
+    (= text "false") (return (value-bool false) true true "")
+    (storage-string-starts-with? text "\"") (serialized-simple-string-value text)
+    (storage-string-starts-with? text ":") (return (value-keyword (string-owned text)) true true "")
+    (storage-string-starts-with? text "[:vev/entity ") (serialized-simple-entity-value text)
+    (storage-string-starts-with? text "[:vev/float \"") (serialized-simple-float-value text)
+    (edn-int-token? text)
+      (let [[parsed parsed-ok] (strconv.parse_int text)]
+        (if parsed-ok
+          (return (value-int (i64 parsed)) true true "")
+          (return (Value {}) false false "")))
+    :else
+      (return (Value {}) false false "")))
+
 (defn value-from-owned-serial-text [text: string] -> [value: Value, ok: bool, error: string]
+  (let [[simple simple-ok simple-matched simple-error] (serialized-simple-value text)]
+    (when simple-matched
+      (return simple simple-ok simple-error)))
   (let [doc (empty-edn-doc)
         [read-ok read-error] (read-edn-text! (addr doc) text)]
     (when (not read-ok)
@@ -9927,21 +10140,29 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (return owned-value true "")))))
 
 (defn sqlite-db-snapshot-datom-at-log-index [snapshot: ^SQLite-DB-Snapshot, log-index: int] -> [datom: Datom, ok: bool, error: string]
+  (let [[cached cached?] (sqlite-db-snapshot-cache-find-datom snapshot log-index)]
+    (when cached?
+      (return cached true "")))
   (if (not (= snapshot^.datom-stmt nil))
     (let [[entity attr value-text tx added loaded-ok loaded-error] (sqlite-step-prepared-datom-by-log-index-parts-raw snapshot^.indexes.handle snapshot^.datom-stmt (i64 log-index))]
       (when (not loaded-ok)
         (return (Datom {}) false loaded-error))
-      (defer (delete attr))
       (defer (delete value-text))
       (let [[value value-ok value-error] (value-from-owned-serial-text value-text)]
         (when (not value-ok)
+          (delete attr)
           (return (Datom {}) false value-error))
-        (return (Datom {e: entity a: (string-owned attr) v: value tx: tx added: added}) true "")))
+        (let [loaded (Datom {e: entity a: attr v: value tx: tx added: added})]
+          (sqlite-db-snapshot-cache-store-datom! snapshot log-index loaded)
+          (return loaded true ""))))
     (let [[text loaded-ok loaded-error] (sqlite-load-datom-by-log-index-text-raw snapshot^.indexes.handle (i64 log-index))]
     (when (not loaded-ok)
       (return (Datom {}) false loaded-error))
     (defer (delete text))
-      (datom-from-owned-serial-text text))))
+      (let [[loaded parsed-ok parsed-error] (datom-from-owned-serial-text text)]
+        (when parsed-ok
+          (sqlite-db-snapshot-cache-store-datom! snapshot log-index loaded))
+        (return loaded parsed-ok parsed-error)))))
 
 (defn sqlite-db-snapshot-eavt-entity-bound [snapshot: ^SQLite-DB-Snapshot, entity: u64, upper: bool] -> [position: int, ok: bool, error: string]
   (let [view (sqlite-db-snapshot-index-view snapshot .EAVT)
@@ -9950,14 +10171,12 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (while (< low high)
       (let [mid (/ (+ low high) 2)
             log-index (db-index-view-at view mid)
-            [datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index snapshot log-index)]
-        (when (not datom-ok)
-          (return low false datom-error))
-        (let [datom-entity datom.e]
-          (delete-owned-datom datom)
-          (if (if upper (<= datom-entity entity) (< datom-entity entity))
-            (set! low (+ mid 1))
-            (set! high mid)))))
+            [datom-entity entity-ok entity-error] (sqlite-load-datom-entity-by-log-index-handle-stmt snapshot^.indexes.handle snapshot^.datom-stmt log-index)]
+        (when (not entity-ok)
+          (return low false entity-error))
+        (if (if upper (<= datom-entity entity) (< datom-entity entity))
+          (set! low (+ mid 1))
+          (set! high mid))))
     (return low true "")))
 
 (defn sqlite-db-snapshot-eavt-entity-range [snapshot: ^SQLite-DB-Snapshot, entity: u64] -> [low: int, high: int, ok: bool, error: string]
@@ -9989,11 +10208,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (while (< low high)
       (let [mid (/ (+ low high) 2)
             log-index (db-index-view-at view mid)
-            [datom datom-ok datom-error] (sqlite-db-snapshot-datom-at-log-index snapshot log-index)]
-        (when (not datom-ok)
-          (return low false datom-error))
-        (let [compare (strings.compare datom.a attr)]
-          (delete-owned-datom datom)
+            [datom-attr attr-ok attr-error] (sqlite-load-datom-attr-by-log-index-handle-stmt snapshot^.indexes.handle snapshot^.datom-stmt log-index)]
+        (when (not attr-ok)
+          (return low false attr-error))
+        (let [compare (strings.compare datom-attr attr)]
+          (delete datom-attr)
           (if (if upper (<= compare 0) (< compare 0))
             (set! low (+ mid 1))
             (set! high mid)))))
@@ -10057,6 +10276,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
             (return (SQLite-DB-Snapshot {}) false datom-stmt-error))
         (return (SQLite-DB-Snapshot {indexes: indexes
                                      datom-stmt: datom-stmt
+                                     datom-cache-log-indexes: (sqlite-db-snapshot-empty-datom-cache-log-indexes)
+                                     datom-cache-datoms: (sqlite-db-snapshot-empty-datom-cache-datoms)
                                      basis-tx: basis-tx
                                      root-row-id: root-row-id
                                      datom-count: (int datom-count)
@@ -10075,6 +10296,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
             (return (SQLite-DB-Snapshot {}) false datom-stmt-error))
         (return (SQLite-DB-Snapshot {indexes: indexes
                                      datom-stmt: datom-stmt
+                                     datom-cache-log-indexes: (sqlite-db-snapshot-empty-datom-cache-log-indexes)
+                                     datom-cache-datoms: (sqlite-db-snapshot-empty-datom-cache-datoms)
                                      basis-tx: basis-tx
                                      root-row-id: published.root-row-id
                                      datom-count: (int datom-count)
@@ -10098,6 +10321,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
               (return (SQLite-DB-Snapshot {}) false retractions-error))
             (return (SQLite-DB-Snapshot {indexes: indexes
                                          datom-stmt: datom-stmt
+                                         datom-cache-log-indexes: (sqlite-db-snapshot-empty-datom-cache-log-indexes)
+                                         datom-cache-datoms: (sqlite-db-snapshot-empty-datom-cache-datoms)
                                          basis-tx: basis-tx
                                          root-row-id: published.root-row-id
                                          datom-count: indexes.eavt.row-count
@@ -12753,6 +12978,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn close-sqlite-db-snapshot! [snapshot: ^SQLite-DB-Snapshot]
   (sqlite-finalize-stmt-raw snapshot^.datom-stmt)
   (close-sqlite-index-snapshot! (addr snapshot^.indexes))
+  (delete snapshot^.datom-cache-log-indexes)
+  (delete-owned-datoms snapshot^.datom-cache-datoms)
   (delete snapshot^.path)
   (set! snapshot^ (SQLite-DB-Snapshot {})))
 
