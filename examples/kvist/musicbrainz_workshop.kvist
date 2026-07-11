@@ -19,6 +19,7 @@
 // Sections: setup through dynamic pattern input.
 
 (def default-uri "build/musicbrainz/vev-mbrainz-tutorial.sqlite")
+(def mbrainz-sample-rules-path "build/upstream/mbrainz-sample/resources/rules.edn")
 
 (def opening-release-pull-query "[:find [(pull $ ?release [*])] :in $ ?artist-name :where [?release :release/artists ?artist] [?artist :artist/name ?artist-name] [?release :release/name ?release-name]]")
 (def tuple-binding-query "[:find [(pull $ ?release [*])] :in $ [?artist-name ?release-name] :where [?artist :artist/name ?artist-name] [?release :release/artists ?artist] [?release :release/name ?release-name]]")
@@ -45,6 +46,12 @@
 
 (def track-release-rules "[[(track-release ?t ?r) [?m :medium/tracks ?t] [?r :release/media ?m]]]")
 (def track-release-rule-query "[:find ?title ?album ?year :in $ % ?artist-name :where [?a :artist/name ?artist-name] [?t :track/artists ?a] [?t :track/name ?title] (track-release ?t ?r) [?r :release/name ?album] [?r :release/year ?year]]")
+(def mbrainz-track-release-rule-query "[:find ?title ?album ?year :in $ % ?artist-name :where [?a :artist/name ?artist-name] [?t :track/artists ?a] [?t :track/name ?title] (track-release ?t ?r) [?r :release/name ?album] [?r :release/year ?year]]")
+(def mbrainz-track-search-info-query "[:find ?title ?artist ?album ?year :in $ % ?search :where (track-search ?search ?track) (track-info ?track ?title ?artist ?album ?year)]")
+(def mbrainz-collab-query "[:find ?aname ?aname2 :in $ % [?aname ...] :where (collab ?aname ?aname2)]")
+(def mbrainz-collab-net-2-query "[:find ?aname ?aname2 :in $ % [?aname ...] :where (collab-net-2 ?aname ?aname2)]")
+(def mbrainz-collab-nested-query "[:find ?aname2 :in $ % [[?aname]] :where (collab ?aname ?aname2)]")
+(def mbrainz-bill-withers-collaboration-query "[:find ?aname ?tname :in $ ?artist-name :where [?a :artist/name ?artist-name] [?t :track/artists ?a] [?t :track/name ?tname] [(!= \"Outro\" ?tname)] [(!= \"[outro]\" ?tname)] [(!= \"Intro\" ?tname)] [(!= \"[intro]\" ?tname)] [?t2 :track/name ?tname] [?t2 :track/artists ?a2] [(!= ?a2 ?a)] [?a2 :artist/name ?aname]]")
 (def track-exercise-rules "[[(track-artist ?t ?artist-name) [?t :track/artists ?a] [?a :artist/name ?artist-name]] [(track-release ?t ?release-name ?release-year) [?m :medium/tracks ?t] [?r :release/media ?m] [?r :release/name ?release-name] [?r :release/year ?release-year]]]")
 (def track-rules-exercise-query "[:find ?track-name ?artist-name ?release-name ?release-year :in $ % ?track-name :where [?t :track/name ?track-name] (track-artist ?t ?artist-name) (track-release ?t ?release-name ?release-year)]")
 (def track-info-rules "[[(track-artist ?t ?artist-name) [?t :track/artists ?a] [?a :artist/name ?artist-name]] [(track-release ?t ?release-name ?release-year) [?m :medium/tracks ?t] [?r :release/media ?m] [?r :release/name ?release-name] [?r :release/year ?release-year]] [(track-info ?t ?artist-name ?release-name ?release-year) (track-artist ?t ?artist-name) (track-release ?t ?release-name ?release-year)]]")
@@ -175,6 +182,27 @@
   (check-result! label result expected passed)
   (vev.delete-query-result result))
 
+(defn query-result-relation-input-text [result: vev.Query-Result] -> string
+  (let [parts (make [dynamic]string) :defer
+        owned-parts (make [dynamic]string) :defer]
+    (arr.push! parts "[#{")
+    (for [row row-index result.result.rows]
+      (when (> row-index 0)
+        (arr.push! parts " "))
+      (arr.push! parts "[")
+      (for [value value-index row.values]
+        (when (> value-index 0)
+          (arr.push! parts " "))
+        (let [value-text (vev.value-serializable-text value)]
+          (arr.push! parts value-text)
+          (arr.push! owned-parts value-text)))
+      (arr.push! parts "]"))
+    (arr.push! parts "}]")
+    (let [out (strings.concatenate (slice parts 0))]
+      (for [part owned-parts]
+        (delete part))
+      out)))
+
 (defn validate-log! [store: ^vev.Store-Conn, passed: ^bool]
   (when (not (= store^.kind .SQLite))
     (fmt.printf "source=kvist section=transaction-log ok=false rows=0 expected=1 error=expected sqlite store\n")
@@ -283,6 +311,15 @@
   (let [result (vev.q-result-store-db-text-with-rules-input-text snapshot query rules inputs)]
     (check-result! label result expected passed)
     (vev.delete-query-result result)))
+
+(defn validate-rule-query-file! [snapshot: ^vev.Store-DB, label: string, query: string, rules-path: string, inputs: string, expected: int, passed: ^bool]
+  (let [[data read-err] (os.read_entire_file rules-path context.allocator)]
+    (when (!= read-err nil)
+      (fmt.printf "source=kvist section=%s ok=false rows=0 expected=%d error=failed to read rules\n" label expected)
+      (set! passed^ false)
+      (return))
+    (defer (delete data))
+    (validate-rule-query! snapshot label query (string data) inputs expected passed)))
 
 (defn check-pull! [label: string, ok: bool, passed: ^bool]
   (fmt.printf "source=kvist section=%s ok=%v rows=%d expected=%d error=%s\n" label ok (if ok 1 0) 1 "")
@@ -591,6 +628,103 @@
           (addr snapshot)
           "John Lennon")
         71 (addr passed))
+      (validate-query-result! "mbrainz-title-by-artist"
+        (vev.q-result-store-db
+          [:find ?title
+           :in $ ?artist-name
+           :where
+           [?a :artist/name ?artist-name]
+           [?t :track/artists ?a]
+           [?t :track/name ?title]]
+          (addr snapshot)
+          "John Lennon")
+        70 (addr passed))
+      (validate-query-result! "mbrainz-title-album-year-by-artist"
+        (vev.q-result-store-db
+          [:find ?title ?album ?year
+           :in $ ?artist-name
+           :where
+           [?a :artist/name ?artist-name]
+           [?t :track/artists ?a]
+           [?t :track/name ?title]
+           [?m :medium/tracks ?t]
+           [?r :release/media ?m]
+           [?r :release/name ?album]
+           [?r :release/year ?year]]
+          (addr snapshot)
+          "John Lennon")
+        93 (addr passed))
+      (validate-query-result! "mbrainz-pre-1970-title-album-year"
+        (vev.q-result-store-db
+          [:find ?title ?album ?year
+           :in $ ?artist-name
+           :where
+           [?a :artist/name ?artist-name]
+           [?t :track/artists ?a]
+           [?t :track/name ?title]
+           [?m :medium/tracks ?t]
+           [?r :release/media ?m]
+           [?r :release/name ?album]
+           [?r :release/year ?year]
+           [(< ?year 1970)]]
+          (addr snapshot)
+          "John Lennon")
+        18 (addr passed))
+      (validate-rule-query-file! (addr snapshot)
+        "mbrainz-track-release-rule"
+        mbrainz-track-release-rule-query
+        mbrainz-sample-rules-path
+        "[\"John Lennon\"]"
+        93
+        (addr passed))
+      (validate-rule-query-file! (addr snapshot)
+        "mbrainz-track-search-info"
+        mbrainz-track-search-info-query
+        mbrainz-sample-rules-path
+        "[\"always\"]"
+        92
+        (addr passed))
+      (validate-rule-query-file! (addr snapshot)
+        "mbrainz-collab"
+        mbrainz-collab-query
+        mbrainz-sample-rules-path
+        "[[\"John Lennon\" \"Paul McCartney\" \"George Harrison\" \"Ringo Starr\"]]"
+        5
+        (addr passed))
+      (validate-rule-query-file! (addr snapshot)
+        "mbrainz-collab-net-2"
+        mbrainz-collab-net-2-query
+        mbrainz-sample-rules-path
+        "[[\"George Harrison\"]]"
+        3
+        (addr passed))
+      (let [[rules-data read-err] (os.read_entire_file mbrainz-sample-rules-path context.allocator)]
+        (when (!= read-err nil)
+          (fmt.printf "source=kvist section=mbrainz-collab-nested ok=false rows=0 expected=2 error=failed to read rules\n")
+          (set! passed false))
+        (when (= read-err nil)
+          (defer (delete rules-data))
+          (let [first-result (vev.q-result-store-db-text-with-rules-input-text
+                               (addr snapshot)
+                               mbrainz-collab-nested-query
+                               (string rules-data)
+                               "[[[\"Diana Ross\"]]]")
+                second-input (query-result-relation-input-text first-result)]
+            (defer (delete second-input))
+            (defer (vev.delete-query-result first-result))
+            (validate-rule-query! (addr snapshot)
+              "mbrainz-collab-nested"
+              mbrainz-collab-nested-query
+              (string rules-data)
+              second-input
+              2
+              (addr passed)))))
+      (validate-query! (addr snapshot)
+        "mbrainz-bill-withers-collaborations"
+        mbrainz-bill-withers-collaboration-query
+        "[\"Bill Withers\"]"
+        83
+        (addr passed))
       (validate-query-result! "get-else-artist-starts"
         (vev.q-result-store-db
           [:find ?artist-name ?year

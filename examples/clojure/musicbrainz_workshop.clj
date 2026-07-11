@@ -2,7 +2,8 @@
 ;; SPDX-License-Identifier: EPL-2.0
 
 (ns musicbrainz-workshop
-  (:require [vev.core :as d]))
+  (:require [clojure.edn :as edn]
+            [vev.core :as d]))
 
 ;; Port source of truth:
 ;; build/upstream/day-of-datomic-conj/src/music_brainz.clj
@@ -13,8 +14,12 @@
 ;; dynamic attribute specs, and aggregate examples.
 ;; build/upstream/day-of-datomic/tutorial/pull.clj
 ;; Sections: setup through dynamic pattern input.
+;; build/upstream/mbrainz-sample/examples/clj/datomic/samples/mbrainz.clj
+;; Sections: opening data queries.
 
 (def default-uri "build/musicbrainz/vev-mbrainz-tutorial.sqlite")
+(def mbrainz-sample-rules-path "build/upstream/mbrainz-sample/resources/rules.edn")
+(def mbrainz-sample-rules (delay (edn/read-string (slurp mbrainz-sample-rules-path))))
 
 (def led-zeppelin [:artist/gid #uuid "678d88b2-87b0-403b-b63d-5da7465aecc3"])
 (def mccartney [:artist/gid #uuid "ba550d0e-adac-4864-b88b-407cab5e76af"])
@@ -123,16 +128,16 @@
     :where
     [?artist :artist/name]
     (not-join [?artist]
-      [?release :release/artists ?artist]
-      [?release :release/year 1970])])
+              [?release :release/artists ?artist]
+              [?release :release/year 1970])])
 
 (def live-at-carnegie-not-bill-withers-count-query
   '[:find (count ?r) .
     :where
     [?r :release/name "Live at Carnegie Hall"]
     (not-join [?r]
-      [?r :release/artists ?a]
-      [?a :artist/name "Bill Withers"])])
+              [?r :release/artists ?a]
+              [?a :artist/name "Bill Withers"])])
 
 (def artist-or-type-gender-count-query
   '[:find (count ?artist) .
@@ -146,9 +151,9 @@
     :where
     [?release :release/name]
     (or-join [?release]
-      (and [?release :release/artists ?artist]
-           [?artist :artist/country :country/CA])
-      [?release :release/year 1970])])
+             (and [?release :release/artists ?artist]
+                  [?artist :artist/country :country/CA])
+             [?release :release/year 1970])])
 
 (def artist-start-before-1600-query
   '[:find ?name ?year
@@ -359,6 +364,88 @@
     [?r :release/artists ?a]
     [?t :track/artists ?a]
     [?t :track/name ?title]])
+
+(def mbrainz-title-by-artist-query
+  '[:find ?title
+    :in $ ?artist-name
+    :where
+    [?a :artist/name ?artist-name]
+    [?t :track/artists ?a]
+    [?t :track/name ?title]])
+
+(def mbrainz-title-album-year-by-artist-query
+  '[:find ?title ?album ?year
+    :in $ ?artist-name
+    :where
+    [?a :artist/name ?artist-name]
+    [?t :track/artists ?a]
+    [?t :track/name ?title]
+    [?m :medium/tracks ?t]
+    [?r :release/media ?m]
+    [?r :release/name ?album]
+    [?r :release/year ?year]])
+
+(def mbrainz-pre-1970-title-album-year-query
+  '[:find ?title ?album ?year
+    :in $ ?artist-name
+    :where
+    [?a :artist/name ?artist-name]
+    [?t :track/artists ?a]
+    [?t :track/name ?title]
+    [?m :medium/tracks ?t]
+    [?r :release/media ?m]
+    [?r :release/name ?album]
+    [?r :release/year ?year]
+    [(< ?year 1970)]])
+
+(def mbrainz-track-release-rule-query
+  '[:find ?title ?album ?year
+    :in $ % ?artist-name
+    :where
+    [?a :artist/name ?artist-name]
+    [?t :track/artists ?a]
+    [?t :track/name ?title]
+    (track-release ?t ?r)
+    [?r :release/name ?album]
+    [?r :release/year ?year]])
+
+(def mbrainz-track-search-info-query
+  '[:find ?title ?artist ?album ?year
+    :in $ % ?search
+    :where
+    (track-search ?search ?track)
+    (track-info ?track ?title ?artist ?album ?year)])
+
+(def mbrainz-collab-query
+  '[:find ?aname ?aname2
+    :in $ % [?aname ...]
+    :where (collab ?aname ?aname2)])
+
+(def mbrainz-collab-net-2-query
+  '[:find ?aname ?aname2
+    :in $ % [?aname ...]
+    :where (collab-net-2 ?aname ?aname2)])
+
+(def mbrainz-collab-nested-query
+  '[:find ?aname2
+    :in $ % [[?aname]]
+    :where (collab ?aname ?aname2)])
+
+(def mbrainz-bill-withers-collaboration-query
+  '[:find ?aname ?tname
+    :in $ ?artist-name
+    :where
+    [?a :artist/name ?artist-name]
+    [?t :track/artists ?a]
+    [?t :track/name ?tname]
+    [(!= "Outro" ?tname)]
+    [(!= "[outro]" ?tname)]
+    [(!= "Intro" ?tname)]
+    [(!= "[intro]" ?tname)]
+    [?t2 :track/name ?tname]
+    [?t2 :track/artists ?a2]
+    [(!= ?a2 ?a)]
+    [?a2 :artist/name ?aname]])
 
 (def pre-1970-release-names-query
   '[:find ?name
@@ -686,7 +773,7 @@
 (defn query-timeout-example [db]
   (d/query {:query query-timeout-query
             :args [db "John Lennon"]
-            :timeout 100}))
+            :timeout 1}))
 
 (defn tracks-by-artist-name [db]
   (d/query {:query tracks-by-artist-name-query
@@ -1042,6 +1129,62 @@
     (let [tracks (tracks-by-artist-name db)]
       (assert (= 70 (count tracks)))
       {:tracks-by-artist-name (count tracks)})))
+
+(defn validate-mbrainz-opening-data-queries! []
+  (with-open [conn (connect)
+              db (db conn)]
+    (let [titles (d/q mbrainz-title-by-artist-query db "John Lennon")
+          albums (d/q mbrainz-title-album-year-by-artist-query db "John Lennon")
+          pre-1970 (d/q mbrainz-pre-1970-title-album-year-query db "John Lennon")
+          track-release (d/q mbrainz-track-release-rule-query
+                             db
+                             @mbrainz-sample-rules
+                             "John Lennon")
+          track-search-info (d/q mbrainz-track-search-info-query
+                                 db
+                                 @mbrainz-sample-rules
+                                 "always")
+          collabs (d/q mbrainz-collab-query
+                       db
+                       @mbrainz-sample-rules
+                       ["John Lennon" "Paul McCartney" "George Harrison" "Ringo Starr"])
+          collab-net-2 (d/q mbrainz-collab-net-2-query
+                            db
+                            @mbrainz-sample-rules
+                            ["George Harrison"])
+          collab-nested (d/q mbrainz-collab-nested-query
+                             db
+                             @mbrainz-sample-rules
+                             (d/q mbrainz-collab-nested-query
+                                  db
+                                  @mbrainz-sample-rules
+                                  [["Diana Ross"]]))
+          bill-withers-collaborations (d/q mbrainz-bill-withers-collaboration-query
+                                        db
+                                        "Bill Withers")]
+      (assert (= 70 (count titles)))
+      (assert (= 93 (count albums)))
+      (assert (= 18 (count pre-1970)))
+      (assert (= 93 (count track-release)))
+      (assert (= 92 (count track-search-info)))
+      (assert (= 5 (count collabs)))
+      (assert (= #{["George Harrison" "Bob Dylan"]
+                   ["George Harrison" "Ali Akbar Khan"]
+                   ["George Harrison" "Ravi Shankar"]}
+                 collab-net-2))
+      (assert (= #{["Diana Ross"]
+                   ["Tammi Terrell"]}
+                 collab-nested))
+      (assert (= 83 (count bill-withers-collaborations)))
+      {:mbrainz-title-by-artist (count titles)
+       :mbrainz-title-album-year-by-artist (count albums)
+       :mbrainz-pre-1970-title-album-year (count pre-1970)
+       :mbrainz-track-release-rule (count track-release)
+       :mbrainz-track-search-info (count track-search-info)
+       :mbrainz-collab (count collabs)
+       :mbrainz-collab-net-2 (count collab-net-2)
+       :mbrainz-collab-nested (count collab-nested)
+       :mbrainz-bill-withers-collaborations (count bill-withers-collaborations)})))
 
 (defn validate-pre-1970-release-stats! []
   (with-open [conn (connect)
@@ -1402,6 +1545,8 @@
 
   ;; d/query timeout:
   ;; Upstream expects this request-map form with `:timeout 100` to throw.
+  ;; Vev is now often fast enough to finish under 100ms, so the validation
+  ;; helper uses a tighter timeout while preserving the request-map shape.
   (query-timeout-example db)
 
   ;; Let's go deeper:

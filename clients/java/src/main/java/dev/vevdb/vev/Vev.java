@@ -172,6 +172,7 @@ public final class Vev {
     private final MethodHandle queryRelationDbPreparedResultWithInputs;
     private final MethodHandle queryRelationDbPreparedRowCountWithInputs;
     private final MethodHandle queryDbPreparedProfileEdnWithInputs;
+    private final MethodHandle queryDbPreparedProfileEdnWithRulesTextAndInputs;
     private final MethodHandle queryDbPreparedEntityColumnWithInputs;
     private final MethodHandle queryDbPreparedStringColumnWithInputs;
     private final MethodHandle u64ArrayFree;
@@ -470,6 +471,7 @@ public final class Vev {
         this.queryRelationDbPreparedResultWithInputs = downcall("vev_query_relation_db_prepared_result_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryRelationDbPreparedRowCountWithInputs = downcall("vev_query_relation_db_prepared_row_count_with_inputs", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedProfileEdnWithInputs = downcall("vev_query_db_prepared_profile_edn_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedProfileEdnWithRulesTextAndInputs = downcall("vev_query_db_prepared_profile_edn_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedEntityColumnWithInputs = downcall("vev_query_db_prepared_entity_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedStringColumnWithInputs = downcall("vev_query_db_prepared_string_column_with_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.u64ArrayFree = downcall("vev_u64_array_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
@@ -1959,6 +1961,17 @@ public final class Vev {
                 return ownedString((MemorySegment) queryDbPreparedProfileEdnWithInputs.invoke(
                     handle.raw,
                     query.raw,
+                    local.allocateUtf8String(inputs)));
+            }
+        }
+
+        public String profileEdn(PreparedQuery query, String rules, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                return ownedString((MemorySegment) queryDbPreparedProfileEdnWithRulesTextAndInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(rules),
                     local.allocateUtf8String(inputs)));
             }
         }

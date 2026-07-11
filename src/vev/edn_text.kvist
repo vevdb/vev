@@ -2605,6 +2605,19 @@
 (defn q-prepared-db-read-source-profiled-with-inputs [source: DB-Read-Source, prepared: Prepared-Query, inputs: []Query-Input] -> Profiled-Result-Set
   (q-prepared-db-read-source-profiled-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) prepared inputs ([]Native-Query-Fn [])))
 
+(defn q-prepared-db-read-source-profiled-with-rules-and-fns [source: DB-Read-Source, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input, registry: []Native-Query-Fn] -> Profiled-Result-Set
+  (cond
+    (not prepared.ok) (profiled-result-set (result-set-error prepared.error) (query-stats-empty))
+    (not prepared-rules.ok) (profiled-result-set (result-set-error prepared-rules.error) (query-stats-empty))
+    :else (let [query-value (query-with-rule-call-plans (query-copy-with-rules prepared.query (slice prepared-rules.rules 0)))
+                prepared-value (Prepared-Query {ok: true error: "" query: query-value})
+                profiled (q-prepared-db-read-source-profiled-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) prepared-value inputs registry)]
+            (delete-query-shallow query-value)
+            profiled)))
+
+(defn q-prepared-db-read-source-profiled-with-rules [source: DB-Read-Source, prepared: Prepared-Query, prepared-rules: Prepared-Rules, inputs: []Query-Input] -> Profiled-Result-Set
+  (q-prepared-db-read-source-profiled-with-rules-and-fns source prepared prepared-rules inputs ([]Native-Query-Fn [])))
+
 (defn q-prepared-db-read-source-with-fns [source: DB-Read-Source, prepared: Prepared-Query, registry: []Native-Query-Fn] -> Result-Set
   (q-prepared-db-read-source-with-sources-inputs-and-fns source ([]DB-Read-Named-Source []) prepared ([]Query-Input []) registry))
 
@@ -3410,7 +3423,8 @@
 (defn query-input-relation-from-value [relation: Relation-Input, value: Value] -> Query-Input
   (cond
     (= value.kind .Map) (query-input-scalar value)
-    (not (= value.kind .Vector)) (query-input-scalar value)
+    (not (or (= value.kind .Vector)
+             (= value.kind .Set))) (query-input-scalar value)
     :else
       (let [width (relation-input-value-width relation)
             flat (make [dynamic]Value)]

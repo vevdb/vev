@@ -132,6 +132,17 @@ Covered in both `examples/clojure/musicbrainz_workshop.clj` and
   `:in` query result. The Clojure path uses Datomic-like request-map
   `d/query`; the Kvist path uses native query-first literal Datalog through
   `vev.q-relation-db`.
+- opening direct data queries from
+  `mbrainz-sample/examples/clj/datomic/samples/mbrainz.clj`: John Lennon
+  track titles by artist name, title/album/year by artist name, and the
+  pre-1970 filtered variant, plus the rules-backed
+  `(track-release ?t ?r)` variant using the upstream
+  `mbrainz-sample/resources/rules.edn` rules file as `%`. Both Clojure and
+  Kvist use the upstream query shapes against the persistent MusicBrainz
+  store. The `track-search` plus `track-info`, `collab`, `collab-net-2`, and
+  nested recursive `d/q` relation-input `collab` examples, plus the final
+  Bill Withers collaboration self-join query from the same upstream file, are
+  also covered in both tutorial paths.
 
 The Clojure path uses the Datomic-like `vev.core` API. The Kvist path uses the
 Vev Kvist package directly against the same persistent store. The Kvist query
@@ -146,10 +157,39 @@ Important performance signal:
 
 - in-memory/native Vev performance is strong and often well ahead of
   DataScript in the current query/rule benchmarks
-- MusicBrainz vs Datomic is broadly healthy; most representative rows are
-  faster in Vev, with a small number of known slower rows
+- MusicBrainz persistent-store correctness is in good shape, but the current
+  `mbrainz-sample` data-query comparison still shows persistent Vev slower
+  than local Datomic on the covered rows. Treat that as the active engine work:
+  use the existing comparison/profiling workflow to find generic planner,
+  source-index, and persisted-row fixes rather than adding benchmark-specific
+  query handlers.
 - the upstream MusicBrainz statistics query now matches Datomic exactly and is
   faster than local Datomic in the comparison harness
+- the generic source physical planner prefers clauses connected to already
+  available variables before disconnected broad scans, which keeps the
+  opening MusicBrainz direct data queries on a viable plan without hard-coding
+  those query texts
+- source-backed seeded rule bodies now use the same bind-join operators as
+  top-level planned queries. Small bound value/ref joins use exact AVET ranges
+  while broad inputs keep the merge-scan path, which makes the upstream
+  `track-search` plus `track-info` MusicBrainz query viable against the
+  persistent store.
+- the upstream `collab` query over a collection input and `%` rules now works
+  from both Clojure and Kvist against the persistent MusicBrainz store. The
+  Clojure request-map timeout validation uses a tighter timeout than the
+  upstream prose because Vev often completes the original `100` ms example
+  before it can demonstrate timeout behavior.
+- the upstream `collab-net-2` query and the nested recursive `d/q` `collab`
+  query now work from both Clojure and Kvist. This added generic
+  source-backed rule operators for attr-parameter same-entity pair relations
+  and two-hop self-join relations, and the EDN/query input parser accepts
+  relation row collections represented as sets as well as vectors. That lets a
+  Clojure `d/q` relation result feed directly into the next `d/q` relation
+  input.
+- the upstream Bill Withers collaboration self-join query now works from both
+  Clojure and Kvist against the persistent MusicBrainz store. It exercises
+  inequality predicates over literals and vars, repeated track-name joins, and
+  duplicate artist exclusion.
 
 ## Exit Criteria
 
@@ -185,6 +225,20 @@ internals:
    `examples/clojure/decomposing_query.clj` and
    `examples/kvist/decomposing_query.kvist` cover the opening executable
    relation-source forms in `day-of-datomic/tutorial/decomposing_a_query.clj`.
+   `examples/clojure/musicbrainz_workshop.clj` and
+   `examples/kvist/musicbrainz_workshop.kvist` also cover the opening direct
+   data queries, the rules-backed `(track-release ?t ?r)` query, and the
+   upstream `track-search` plus `track-info` query, plus the upstream
+   `collab`, `collab-net-2`, and nested recursive `d/q` `collab` relation
+   input queries, plus the final Bill Withers collaboration self-join query in
+   `mbrainz-sample/examples/clj/datomic/samples/mbrainz.clj`.
+
+   Next exact upstream section: no executable forms remain in
+   `build/upstream/mbrainz-sample/examples/clj/datomic/samples/mbrainz.clj`.
+   The current task is productizing comparison for this now-covered upstream
+   data-query section. `scripts/compare_musicbrainz_workshop.sh` runs the
+   matching Clojure Vev query set, the Kvist workshop validation, and, when
+   requested, the matching local Datomic query set.
 
    Kvist tutorial API status:
 
@@ -317,19 +371,32 @@ internals:
      examples on the generic relation engine, though broad branch scans remain
      a legitimate later performance target
 
-   Next concrete parity work:
+   Current comparison workflow:
 
-   - reuse existing Vev aggregate support where it already matches and fix real
-     semantic/performance gaps when they appear
-   - keep the existing Clojure host predicate/function/aggregate coverage
-     aligned with the exact upstream forms, and add matching Kvist literal
-     forms where the function is built-in and does not require host callback
-     registration
-   - add the Kvist-side custom predicate/aggregate function exposure only when
-     a concrete upstream tutorial form needs it, keeping the query-first native
-     literal style
-   - decide whether host-callback cases should be included in the fast smoke
-     command long term or split into a slower host-interop check
+   - `scripts/compare_musicbrainz_workshop.sh --skip-datomic` validates the
+     covered upstream data-query section against Clojure Vev and Kvist Vev
+   - `scripts/compare_musicbrainz_workshop.sh` additionally runs the same
+     named query workloads against local Datomic and compares row count plus a
+     stable portable fingerprint
+   - the wrapper starts and stops the local Datomic sample transactor for
+     Datomic comparisons; the sample DB still must have been prepared at least
+     once with `scripts/musicbrainz_sample.sh prepare`
+   - Datomic comparison output includes Vev time, Datomic time, and a
+     machine-readable `ratio` for each workload
+   - current result: full Clojure/Kvist/Datomic workflow passes correctness
+     for all nine ported `mbrainz-sample` data-query workloads by row count
+     and portable fingerprint
+   - Clojure request-map `:query-stats` now handles Datomic-style `%` rules
+     input for persistent DB snapshots. Rule-backed MusicBrainz rows now report
+     rule calls/iterations, source index scans, source operators, clause
+     candidates, and output rows instead of `unsupported`.
+   - current performance signal: persistent Vev is still slower than local
+     Datomic on these rows. A recent comparison run showed the slowest rows in
+     the rule/recursive and broad-filter cases, while all rows still matched by
+     count/fingerprint. This is the next real bottleneck; do not mark the gate
+     complete until the representative rows are at least close to Datomic or
+     each remaining slow row has a specific engine/storage explanation and
+     planned fix.
 
 2. **MusicBrainz import and fixture setup**
 
@@ -347,6 +414,8 @@ internals:
 
    - `scripts/musicbrainz_workshop_clojure.sh`
    - `scripts/musicbrainz_workshop_kvist.sh`
+   - `scripts/compare_musicbrainz_workshop.sh --skip-datomic`
+   - `scripts/compare_musicbrainz_workshop.sh` when local Datomic is available
    - `scripts/aggregates_tutorial_clojure.sh`
    - `scripts/aggregates_tutorial_kvist.sh`
    - `scripts/compare_aggregates_tutorial.sh`
@@ -355,12 +424,20 @@ internals:
 
 3. **Datomic comparison harness**
 
-   Required:
+   Status: usable for the covered upstream `mbrainz-sample` data-query
+   section. It runs Datomic first, then Vev, normalizes Clojure/Datomic Java
+   collection result shapes, and compares row count plus stable portable
+   fingerprint.
 
-   - run the same query definitions against local Datomic and Vev
-   - report row count, stable fingerprint, Vev time, Datomic time, and ratio
-   - keep timing methodology simple and visible enough to trust
-   - separate correctness failures from performance regressions
+   Remaining:
+
+   - keep `scripts/compare_musicbrainz_workshop.sh` as the normal regression
+     command for this upstream section
+   - if a future mismatch appears, fix it as an engine/API issue, not by
+     changing the upstream query shapes
+   - improve persistent query performance using these measured rows as the
+     guide; the comparison harness now clearly separates correctness matches
+     from slower Vev ratios
 
 4. **Only fix engine/storage issues exposed by this path**
 
@@ -371,6 +448,20 @@ internals:
    - wrapper API friction that makes tutorial code unlike Datomic/DataScript
    - persistent store reopen/query behavior that makes the workflow clumsy
    - specific MusicBrainz query rows slower than local Datomic
+
+   Current priority:
+
+   - use request-map `:query-stats true` on the exact ported
+     `mbrainz-sample` rows to inspect the generic physical planner and
+     persisted index path, starting with `mbrainz-collab-nested`,
+     `mbrainz-pre-1970-title-album-year`, `mbrainz-collab`, and
+     `mbrainz-collab-net-2`
+   - look for broad persisted scans, repeated per-row store fetches, rule
+     relation materialization, or excess source-operator invocations where the
+     same query shape can use existing source indexes or typed relation
+     operators
+   - keep fixes generic to Datalog rule/join/index execution, not keyed to
+     exact MusicBrainz query strings
 
 ## Later
 

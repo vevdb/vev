@@ -5886,6 +5886,53 @@ abi_free_stmt :: proc(stmt: rawptr) {
           out)))))
 
 @export
+(defn vev_query_db_prepared_profile_edn_with_rules_text_and_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, rules-text: cstring, inputs-text: cstring] -> cstring
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= rules-text nil) (= inputs-text nil))
+    (return (c-string-owned "[:vev/error \"null db, query, rules, or inputs\"]")))
+  (let [rules-text-value (text-from-c rules-text)
+        inputs-text-value (text-from-c inputs-text)
+        store-ptr-value (store-db-ptr db)
+        query-ptr-value (prepared-query-ptr query)
+        rules (vev.parse-rules-text rules-text-value)]
+    (when (not query-ptr-value^.ok)
+      (vev.delete-prepared-rules-shallow rules)
+      (delete rules-text-value)
+      (delete inputs-text-value)
+      (return (c-string-owned query-ptr-value^.error)))
+    (when (not rules.ok)
+      (let [out (c-string-owned rules.error)]
+        (vev.delete-prepared-rules-shallow rules)
+        (delete rules-text-value)
+        (delete inputs-text-value)
+        (return out)))
+    (let [[inputs input-ok error] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+      (when (not input-ok)
+        (vev.delete-owned-query-inputs inputs)
+        (vev.delete-prepared-rules-shallow rules)
+        (delete rules-text-value)
+        (delete inputs-text-value)
+        (return (c-string-owned error)))
+      (let [[source source-ok source-error] (vev.store-db-read-source store-ptr-value)]
+        (when (not source-ok)
+          (vev.delete-owned-query-inputs inputs)
+          (vev.delete-prepared-rules-shallow rules)
+          (delete rules-text-value)
+          (delete inputs-text-value)
+          (return (c-string-owned source-error)))
+        (let [profiled (vev.q-prepared-db-read-source-profiled-with-rules source query-ptr-value^ rules (slice inputs 0))
+              value (vev.query-stats-value profiled.stats)
+              text (vev.value-serializable-text value)
+              out (c-string-owned text)]
+          (vev.delete-owned-query-inputs inputs)
+          (vev.delete-prepared-rules-shallow rules)
+          (delete rules-text-value)
+          (delete inputs-text-value)
+          (vev.delete-value-containers-shallow value)
+          (vev.delete-profiled-result-set-shallow profiled)
+          out)))))
+
+@export
 (defn vev_entity_int_pairs_free :abi "c" [array: Vev-Entity-Int-Pairs]
   (odin "context = runtime.default_context()")
   (abi-free-entity-int-pairs (rawptr array)))

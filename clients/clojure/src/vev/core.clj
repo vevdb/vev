@@ -729,8 +729,8 @@
       (when (seq tail)
         (take-while #(not (#{:where :with :keys :strs :syms} %)) (rest tail))))
 
-	    :else
-	    nil))
+    :else
+    nil))
 
 (defn- query-explicitly-takes-db? [query]
   (some #(= '$ %) (query-in-forms query)))
@@ -1659,7 +1659,7 @@
         (if-let [columns (entity-int-pair-columns source prepared inputs)]
           (pair-fn columns)
           (when-let [columns (entity-string-int-triples source prepared inputs)]
-          (triple-fn columns)))))))
+            (triple-fn columns)))))))
 
 (defn- optimized-column-output [^Vev$ColumnResult columns entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
   (when columns
@@ -1782,6 +1782,14 @@
   [^PreparedQuery prepared ^DB db & inputs]
   (edn/read-string (.profileEdn (:native db) (:native prepared) (inputs-text inputs))))
 
+(defn profile-with-rules
+  "Run a prepared query with Datomic-style rules against a DB and return Vev's native query stats."
+  [^PreparedQuery prepared ^DB db rules & inputs]
+  (edn/read-string (.profileEdn (:native db)
+                                (:native prepared)
+                                (edn-text rules)
+                                (inputs-text inputs))))
+
 (defn- query-output [source prepared rules inputs result-fn entity-fn string-fn pair-fn string-pair-fn string-int-fn string-string-fn triple-fn]
   (if rules
     (with-open [result (apply query-result-with-rules source prepared rules inputs)]
@@ -1807,31 +1815,31 @@
       (with-open [empty-source (empty-db)]
         (apply rows query empty-source source inputs))
       (if (instance? Log source)
-	      (log-query-rows source query inputs)
-	      (if (instance? PreparedQuery query)
-	      (prepared-query-output source query inputs
-                             rows-from-result
-                             entity-column-rows
-                             string-column-rows
-                             entity-int-pair-rows
-                             entity-string-pair-rows
-                             string-int-pair-rows
-                             string-string-pair-rows
-                             entity-string-int-triple-rows)
-      (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
-        (with-open [prepared (prepare source query)]
-          (let [result (query-output-with-auto-fns source query prepared rules inputs
-                                                   rows-from-result
-                                                   entity-column-rows
-                                                   string-column-rows
-                                                   entity-int-pair-rows
-                                                   entity-string-pair-rows
-                                                   string-int-pair-rows
-                                                   string-string-pair-rows
-                                                   entity-string-int-triple-rows)]
-            (if-let [return-map (query-return-map query)]
-              (keyed-rows return-map result)
-	              result)))))))))
+        (log-query-rows source query inputs)
+        (if (instance? PreparedQuery query)
+          (prepared-query-output source query inputs
+                                 rows-from-result
+                                 entity-column-rows
+                                 string-column-rows
+                                 entity-int-pair-rows
+                                 entity-string-pair-rows
+                                 string-int-pair-rows
+                                 string-string-pair-rows
+                                 entity-string-int-triple-rows)
+          (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
+            (with-open [prepared (prepare source query)]
+              (let [result (query-output-with-auto-fns source query prepared rules inputs
+                                                       rows-from-result
+                                                       entity-column-rows
+                                                       string-column-rows
+                                                       entity-int-pair-rows
+                                                       entity-string-pair-rows
+                                                       string-int-pair-rows
+                                                       string-string-pair-rows
+                                                       entity-string-int-triple-rows)]
+                (if-let [return-map (query-return-map query)]
+                  (keyed-rows return-map result)
+                  result)))))))))
 
 (defn q
   "Run a query and return Datomic-style results for the query find spec."
@@ -1841,31 +1849,31 @@
       (with-open [empty-source (empty-db)]
         (apply q query empty-source source inputs))
       (if (instance? Log source)
-	      (log-query-output source query inputs)
-	      (if (instance? PreparedQuery query)
-	      (prepared-query-output source query inputs
-                             q-from-result
-                             entity-column-set
-                             string-column-set
-                             entity-int-pair-set
-                             entity-string-pair-set
-                             string-int-pair-set
-                             string-string-pair-set
-                             entity-string-int-triple-set)
-      (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
-        (with-open [prepared (prepare source query)]
-          (let [result (query-output-with-auto-fns source query prepared rules inputs
-                                                   rows-from-result
-                                                   entity-column-rows
-                                                   string-column-rows
-                                                   entity-int-pair-rows
-                                                   entity-string-pair-rows
-                                                   string-int-pair-rows
-                                                   string-string-pair-rows
-                                                   entity-string-int-triple-rows)]
-            (if-let [return-map (query-return-map query)]
-              (keyed-set return-map result)
-	              (apply-find-shape query result))))))))))
+        (log-query-output source query inputs)
+        (if (instance? PreparedQuery query)
+          (prepared-query-output source query inputs
+                                 q-from-result
+                                 entity-column-set
+                                 string-column-set
+                                 entity-int-pair-set
+                                 entity-string-pair-set
+                                 string-int-pair-set
+                                 string-string-pair-set
+                                 entity-string-int-triple-set)
+          (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
+            (with-open [prepared (prepare source query)]
+              (let [result (query-output-with-auto-fns source query prepared rules inputs
+                                                       rows-from-result
+                                                       entity-column-rows
+                                                       string-column-rows
+                                                       entity-int-pair-rows
+                                                       entity-string-pair-rows
+                                                       string-int-pair-rows
+                                                       string-string-pair-rows
+                                                       entity-string-int-triple-rows)]
+                (if-let [return-map (query-return-map query)]
+                  (keyed-set return-map result)
+                  (apply-find-shape query result))))))))))
 
 (defn query
   "Run a Datomic-style query.
@@ -1899,9 +1907,12 @@
                                   (when-not (instance? DB source)
                                     (throw (ex-info "query-stats request requires a DB value as first arg"
                                                     {:source source})))
-                                  (with-open [prepared (prepare source query)]
-                                    {:ret ret
-                                     :query-stats (apply profile prepared source inputs)}))
+                                  (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
+                                    (with-open [prepared (prepare source query)]
+                                      {:ret ret
+                                       :query-stats (if rules
+                                                      (apply profile-with-rules prepared source rules inputs)
+                                                      (apply profile prepared source inputs))})))
                                 ret)
                        elapsed-ms (/ (double (- (System/nanoTime) started)) 1000000.0)]
                    (when (and timeout-ms (> elapsed-ms (double timeout-ms)))
