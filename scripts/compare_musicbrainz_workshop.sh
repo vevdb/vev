@@ -13,6 +13,7 @@ RUN_KVIST="true"
 QUERY_STATS="false"
 WARMUP_RUNS="0"
 MEASURE_RUNS="1"
+PREPARED_VEV="false"
 
 usage() {
   cat <<EOF
@@ -25,6 +26,7 @@ options:
   --engine all|vev|datomic  Clojure comparison engine; default: all
   --workload name           workload name or suffix; default: all
   --query-stats             print Vev query stats for selected workload(s)
+  --prepared-vev            prepare each Vev query once per workload before timing
   --warmup-runs n           unreported warmup runs per workload; default: 0
   --measure-runs n          measured runs per workload; default: 1
   --skip-datomic            run only Vev Clojure plus Kvist validation
@@ -42,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --engine) ENGINE="$2"; shift 2 ;;
     --workload) WORKLOAD="$2"; shift 2 ;;
     --query-stats) QUERY_STATS="true"; shift ;;
+    --prepared-vev) PREPARED_VEV="true"; shift ;;
     --warmup-runs) WARMUP_RUNS="$2"; shift 2 ;;
     --measure-runs) MEASURE_RUNS="$2"; shift 2 ;;
     --skip-datomic) ENGINE="vev"; shift ;;
@@ -87,6 +90,7 @@ clojure \
   --engine "$ENGINE" \
   --workload "${WORKLOAD:-all}" \
   --query-stats "$QUERY_STATS" \
+  --prepared-vev "$PREPARED_VEV" \
   --warmup-runs "$WARMUP_RUNS" \
   --measure-runs "$MEASURE_RUNS" \
   --datomic-uri "$DATOMIC_URI"

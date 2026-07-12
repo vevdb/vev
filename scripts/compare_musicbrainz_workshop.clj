@@ -112,6 +112,10 @@
 (defn run-workload-query [q db workload]
   (apply run-q q db (:query workload) ((:args workload))))
 
+(defn run-workload-prepared-query [db prepared workload]
+  (let [args ((:args workload))]
+    (apply vev/q prepared db args)))
+
 (def workloads
   [{:name "mbrainz-title-by-artist"
     :query workshop/mbrainz-title-by-artist-query
@@ -160,10 +164,64 @@
                        :available (mapv :name workloads)})))
     selected-items))
 
+(declare run-workload)
+
 (defn execute-workload [q db workload]
   (if (:query workload)
     (run-workload-query q db workload)
     ((:run workload) q db)))
+
+(defn execute-prepared-vev-workload [db prepared workload]
+  (if (:query workload)
+    (run-workload-prepared-query db prepared workload)
+    ((:run workload) vev/q db)))
+
+(defn run-prepared-vev-workload [db workload warmup-runs measure-runs]
+  (if-not (:query workload)
+    (run-workload "vev-clojure-prepared" vev/q db workload warmup-runs measure-runs)
+    (with-open [prepared (vev/prepare db (:query workload))]
+      (dotimes [_ warmup-runs]
+        (execute-prepared-vev-workload db prepared workload))
+      (let [measurements (doall
+                          (repeatedly measure-runs
+                                      #(let [[result elapsed] (elapsed-us
+                                                               (fn []
+                                                                 (execute-prepared-vev-workload db prepared workload)))
+                                             rows (result-rows result)]
+                                         {:elapsed-us elapsed
+                                          :rows (count rows)
+                                          :fingerprint (result-fingerprint rows)})))
+            first-measurement (first measurements)
+            row-count (:rows first-measurement)
+            fingerprint (:fingerprint first-measurement)
+            inconsistent (seq (remove #(and (= row-count (:rows %))
+                                            (= fingerprint (:fingerprint %)))
+                                      measurements))
+            elapsed-values (map :elapsed-us measurements)
+            elapsed (median elapsed-values)]
+        (when inconsistent
+          (throw (ex-info "workload produced inconsistent repeated results"
+                          {:workload (:name workload)
+                           :engine "vev-clojure-prepared"
+                           :measurements measurements})))
+        (println
+         (if (= measure-runs 1)
+           (fmt "engine=vev-clojure-prepared workload=%s ok=true rows=%d fingerprint=%s elapsed_us=%.0f"
+                (:name workload) row-count fingerprint elapsed)
+           (fmt "engine=vev-clojure-prepared workload=%s ok=true rows=%d fingerprint=%s elapsed_us=%.0f runs=%d warmup_runs=%d best_us=%.0f worst_us=%.0f"
+                (:name workload)
+                row-count
+                fingerprint
+                elapsed
+                measure-runs
+                warmup-runs
+                (apply min elapsed-values)
+                (apply max elapsed-values))))
+        {:engine "vev-clojure-prepared"
+         :workload (:name workload)
+         :rows row-count
+         :fingerprint fingerprint
+         :elapsed-us elapsed}))))
 
 (defn run-workload [engine-name q db workload warmup-runs measure-runs]
   (dotimes [_ warmup-runs]
@@ -234,12 +292,14 @@
             elapsed
             (stats-line (:query-stats result)))))))
 
-(defn run-vev [selected query-stats? warmup-runs measure-runs]
+(defn run-vev [selected query-stats? prepared? warmup-runs measure-runs]
   (with-open [conn (workshop/connect)
               db (workshop/db conn)]
     (let [selected-items (selected-workloads selected)
           results (doall
-                   (map #(run-workload "vev-clojure" vev/q db % warmup-runs measure-runs)
+                   (map #(if prepared?
+                           (run-prepared-vev-workload db % warmup-runs measure-runs)
+                           (run-workload "vev-clojure" vev/q db % warmup-runs measure-runs))
                         selected-items))]
       (when query-stats?
         (doseq [workload selected-items]
@@ -328,6 +388,7 @@
         selected (arg-value args "--workload" "all")
         datomic-uri (arg-value args "--datomic-uri" default-datomic-uri)
         query-stats? (truthy-arg? (arg-value args "--query-stats" "false"))
+        prepared-vev? (truthy-arg? (arg-value args "--prepared-vev" "false"))
         warmup-runs (int-arg args "--warmup-runs" 0)
         measure-runs (int-arg args "--measure-runs" 1)]
     (when (< measure-runs 1)
@@ -336,7 +397,7 @@
     (let [datomic-results (when (or (= engine "all") (= engine "datomic"))
                             (run-datomic datomic-uri selected warmup-runs measure-runs))
           vev-results (when (or (= engine "all") (= engine "vev"))
-                        (run-vev selected query-stats? warmup-runs measure-runs))]
+                        (run-vev selected query-stats? prepared-vev? warmup-runs measure-runs))]
       (when (and vev-results datomic-results)
         (compare-results! selected vev-results datomic-results))
       (shutdown-agents)

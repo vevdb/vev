@@ -12605,11 +12605,10 @@
         (delete-query-relation rule-rel)
         (return (query-relation-empty) false))
       (if rule-rel-has-passthrough
-        (let [deduped (query-relation-dedupe-step rule-rel)]
-          (delete-query-relation rule-rel)
+        (do
           (mut! stats^.rule-iterations += 1)
-          (query-stats-observe-bindings! stats (query-relation-row-count deduped))
-          (return deduped deduped.has-typed-columns))
+          (query-stats-observe-bindings! stats (query-relation-row-count rule-rel))
+          (return rule-rel rule-rel.has-typed-columns))
         (let [joined (query-relation-join (DB {}) ([]DB-Source []) rel rule-rel)
               deduped (query-relation-dedupe-step joined)]
           (delete-query-relation rule-rel)
@@ -20395,6 +20394,19 @@
               (arr.push! attrs arg.name)
               (arr.push! attr-sources body-rel.attr-sources[param-indexes[arg-index]])
               (arr.push! source-indexes param-indexes[arg-index])))))
+      (let [call-output-indexes (make [dynamic]int 0 (count call.args))]
+        (for [arg call.args]
+          (if (= arg.kind .Var)
+            (let [[output-index output-ok] (attr-position (slice attrs 0) arg.name)]
+              (when (not output-ok)
+                (delete attrs)
+                (delete attr-sources)
+                (delete source-indexes)
+                (delete param-indexes)
+                (delete call-output-indexes)
+                (return (query-relation-empty) false))
+              (arr.push! call-output-indexes output-index))
+            (arr.push! call-output-indexes -1)))
       (let [typed-columns (relation-columns-for-attrs (slice attrs 0))
             typed-rows 0
             row 0]
@@ -20406,12 +20418,10 @@
                   (if param-ok
                     (case arg.kind
                       .Var
-                        (let [[output-index output-ok] (attr-position (slice attrs 0) arg.name)]
-                          (if output-ok
-                            (let [[existing existing-ok] (typed-relation-column-value body-rel.typed-columns[source-indexes[output-index]] row)]
-                              (set! row-ok (and existing-ok
-                                                 (predicate-value-equal? existing param-value))))
-                            (set! row-ok false)))
+                        (let [output-index call-output-indexes[arg-index]
+                              [existing existing-ok] (typed-relation-column-value body-rel.typed-columns[source-indexes[output-index]] row)]
+                          (set! row-ok (and existing-ok
+                                             (predicate-value-equal? existing param-value))))
                       .Value
                         (set! row-ok (predicate-value-equal? param-value arg.value))
                       .Wildcard
@@ -20435,18 +20445,20 @@
                   (delete attr-sources)
                   (delete source-indexes)
                   (delete param-indexes)
+                  (delete call-output-indexes)
                   (delete-relation-columns typed-columns)
                   (return (query-relation-empty) false)))))
           (set! row (+ row 1)))
         (delete source-indexes)
         (delete param-indexes)
+        (delete call-output-indexes)
         (return (Query-Relation {attrs: attrs
                                  attr-sources: attr-sources
                                  attr-index: (query-relation-attr-index (slice attrs 0))
                                  tuples: (make [dynamic]Binding)
                                  typed-columns: typed-columns
                                  typed-rows: typed-rows
-                                 has-typed-columns: true}) true)))))
+                                 has-typed-columns: true}) true))))))
 
 (defn query-relation-project-rule-call-bindings [params: []string, memo-bindings: []Binding, call: Rule-Call] -> Query-Relation
   (let [[typed typed-ok] (query-relation-project-rule-call-bindings-typed-distinct params memo-bindings call)]
@@ -37311,7 +37323,15 @@
       (return (Source-Index-Datom-Stream {}) false true 0 latest-error))
     (when (not (= latest-basis source.sqlite-snapshot^.basis-tx))
       (return (Source-Index-Datom-Stream {}) true false 0 "")))
-  (let [[datoms datoms-ok datoms-error] (sqlite-direct-frontier-datoms source.sqlite-snapshot^.indexes.handle (public-index-order-text order) entities attr)]
+  (let [unique (set.empty u64) :defer
+        sorted-entities (make [dynamic]u64)]
+    (for [entity entities]
+      (when (not (set.contains? unique entity))
+        (set.add! unique entity)
+        (arr.push! sorted-entities entity)))
+    (arr.sort! sorted-entities)
+  (let [[datoms datoms-ok datoms-error] (sqlite-direct-frontier-datoms source.sqlite-snapshot^.indexes.handle (public-index-order-text order) (slice sorted-entities 0) attr)]
+    (delete sorted-entities)
     (when (not datoms-ok)
       (delete-owned-datoms datoms)
       (return (Source-Index-Datom-Stream {}) false true 0 datoms-error))
@@ -37319,7 +37339,7 @@
           [out-stream stream-ok stream-error] (source-index-datom-stream-from-owned-datoms source datoms)]
       (if stream-ok
         (return out-stream true true candidate-count "")
-        (return (Source-Index-Datom-Stream {}) false true candidate-count stream-error)))))
+        (return (Source-Index-Datom-Stream {}) false true candidate-count stream-error))))))
 
 (defn source-frontier-datom-matches? [datom: Datom, order: Public-Index-Order, entities: ^set[u64], attr: string] -> bool
   (cond

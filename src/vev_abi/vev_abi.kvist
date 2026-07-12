@@ -5675,6 +5675,42 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (Vev-Result result)))
 
 @export
+(defn vev_query_db_prepared_column_batch_with_rules_text_and_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, rules-text: cstring, inputs-text: cstring] -> Vev-Column-Batch
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= rules-text nil) (= inputs-text nil))
+    (return (Vev-Column-Batch nil)))
+  (let [rules-text-value (text-from-c rules-text)
+        inputs-text-value (text-from-c inputs-text)
+        store-ptr-value (store-db-ptr db)
+        query-ptr-value (prepared-query-ptr query)
+        rules (vev.parse-rules-text rules-text-value)]
+    (defer (delete rules-text-value))
+    (defer (delete inputs-text-value))
+    (defer (vev.delete-prepared-rules-shallow rules))
+    (when (or (not query-ptr-value^.ok)
+              (not rules.ok))
+      (return (Vev-Column-Batch nil)))
+    (let [[source source-ok _] (vev.store-db-read-source store-ptr-value)]
+      (when (not source-ok)
+        (return (Vev-Column-Batch nil)))
+      (let [[inputs input-ok _] (vev.parse-query-inputs-text-for-query query-ptr-value^.query inputs-text-value)]
+        (when (not input-ok)
+          (vev.delete-owned-query-inputs inputs)
+          (return (Vev-Column-Batch nil)))
+        (let [query-with-rules (vev.query-with-rule-call-plans (vev.query-copy-with-rules query-ptr-value^.query (slice rules.rules 0)))
+              typed-out (column-batch-from-source-query-inputs source ([]vev.DB-Read-Named-Source []) query-with-rules (slice inputs 0))]
+          (when (not (= (rawptr typed-out) nil))
+            (vev.delete-query-shallow query-with-rules)
+            (vev.delete-owned-query-inputs inputs)
+            (return typed-out))
+          (vev.delete-query-shallow query-with-rules))
+        (let [query-result (vev.q-result-prepared-db-read-source-with-rules source query-ptr-value^ rules (slice inputs 0))
+              out (column-batch-from-result query-result.result)]
+          (vev.delete-owned-query-inputs inputs)
+          (vev.delete-query-result query-result)
+          out)))))
+
+@export
 (defn vev_query_db_prepared_entity_column_with_inputs :abi "c" [db: Vev-DB, query: Vev-Prepared-Query, inputs-text: cstring] -> Vev-U64-Array
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr db) nil) (= (rawptr query) nil) (= inputs-text nil))

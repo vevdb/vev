@@ -156,6 +156,7 @@ public final class Vev {
     private final MethodHandle preparedQueryFree;
     private final MethodHandle queryPreparedResultWithRulesTextAndInputs;
     private final MethodHandle queryDbPreparedResultWithRulesTextAndInputs;
+    private final MethodHandle queryDbPreparedColumnBatchWithRulesTextAndInputs;
     private final MethodHandle stmtCreate;
     private final MethodHandle stmtClear;
     private final MethodHandle stmtFree;
@@ -455,6 +456,7 @@ public final class Vev {
         this.preparedQueryFree = downcall("vev_prepared_query_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.queryPreparedResultWithRulesTextAndInputs = downcall("vev_query_prepared_result_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.queryDbPreparedResultWithRulesTextAndInputs = downcall("vev_query_db_prepared_result_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        this.queryDbPreparedColumnBatchWithRulesTextAndInputs = downcall("vev_query_db_prepared_column_batch_with_rules_text_and_inputs", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.stmtCreate = downcall("vev_stmt_create", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         this.stmtClear = downcall("vev_stmt_clear", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
         this.stmtFree = downcall("vev_stmt_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
@@ -1988,6 +1990,18 @@ public final class Vev {
                     query.raw,
                     local.allocateUtf8String(rules),
                     local.allocateUtf8String(inputs)));
+            }
+        }
+
+        public ColumnResult queryColumns(PreparedQuery query, String rules, String inputs) throws Throwable {
+            requireOpen();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment raw = (MemorySegment) queryDbPreparedColumnBatchWithRulesTextAndInputs.invoke(
+                    handle.raw,
+                    query.raw,
+                    local.allocateUtf8String(rules),
+                    local.allocateUtf8String(inputs));
+                return columnResultFromBatch(raw);
             }
         }
 

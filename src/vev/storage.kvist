@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS vev_datoms (
   e INTEGER NOT NULL,
   a TEXT NOT NULL,
   value_text TEXT NOT NULL,
+  value_entity INTEGER NOT NULL DEFAULT -1,
   tx INTEGER NOT NULL,
   added INTEGER NOT NULL,
   FOREIGN KEY(tx) REFERENCES vev_transactions(tx)
@@ -309,6 +310,11 @@ sqlite_open_initialized :: proc(path: string) -> (^SQLite3, bool, string) {
         _ = sqlite3_close(db)
         return nil, false, log_index_error
     }
+    value_entity_ok, value_entity_error := sqlite_ensure_datom_value_entity_column(db)
+    if !value_entity_ok {
+        _ = sqlite3_close(db)
+        return nil, false, value_entity_error
+    }
     child_count_ok, child_count_error := sqlite_ensure_index_chunk_child_count_column(db)
     if !child_count_ok {
         _ = sqlite3_close(db)
@@ -343,6 +349,22 @@ sqlite_ensure_datom_log_index_column :: proc(db: ^SQLite3) -> (bool, string) {
         return false, err
     }
     index_ok, index_error := sqlite_exec_ok(db, \"CREATE INDEX IF NOT EXISTS vev_datoms_log_index ON vev_datoms(log_index)\")
+    if !index_ok {
+        return false, index_error
+    }
+    return true, \"\"
+}
+
+sqlite_ensure_datom_value_entity_column :: proc(db: ^SQLite3) -> (bool, string) {
+    ok, err := sqlite_exec_ok(db, \"ALTER TABLE vev_datoms ADD COLUMN value_entity INTEGER NOT NULL DEFAULT -1\")
+    if !ok && !strings.contains(err, \"duplicate column name\") {
+        return false, err
+    }
+    backfill_ok, backfill_error := sqlite_exec_ok(db, \"UPDATE vev_datoms SET value_entity = CAST(substr(value_text, 14, length(value_text) - 14) AS INTEGER) WHERE value_entity = -1 AND value_text LIKE '[:vev/entity %]' AND substr(value_text, length(value_text), 1) = ']'\")
+    if !backfill_ok {
+        return false, backfill_error
+    }
+    index_ok, index_error := sqlite_exec_ok(db, \"CREATE INDEX IF NOT EXISTS vev_datoms_vaet_entity ON vev_datoms(value_entity, a, e, tx, added)\")
     if !index_ok {
         return false, index_error
     }
@@ -3414,7 +3436,7 @@ sqlite_step_copy_index_chunk_edges_before_ordinal_stmt_raw :: proc(handle: rawpt
     return true, \"\"
 }
 
-sqlite_insert_datom_raw :: proc(handle: rawptr, log_index: i64, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
+sqlite_insert_datom_raw :: proc(handle: rawptr, log_index: i64, e: u64, a: string, value_text: string, value_entity: i64, tx: u64, added: bool) -> (bool, string) {
     if handle == nil {
         return false, \"sqlite handle was nil\"
     }
@@ -3424,7 +3446,7 @@ sqlite_insert_datom_raw :: proc(handle: rawptr, log_index: i64, e: u64, a: strin
         return false, tx_error
     }
     stmt: ^SQLite3_Stmt
-    sql := \"INSERT INTO vev_datoms (log_index, e, a, value_text, tx, added) VALUES (?, ?, ?, ?, ?, ?)\"
+    sql := \"INSERT INTO vev_datoms (log_index, e, a, value_text, value_entity, tx, added) VALUES (?, ?, ?, ?, ?, ?, ?)\"
     sql_c, sql_c_ok := sqlite_cstring(sql)
     if !sql_c_ok {
         return false, \"failed to allocate sqlite SQL text\"
@@ -3438,8 +3460,9 @@ sqlite_insert_datom_raw :: proc(handle: rawptr, log_index: i64, e: u64, a: strin
        sqlite3_bind_int64(stmt, 2, i64(e)) != SQLITE_OK ||
        sqlite_bind_text_borrowed(stmt, 3, a) != SQLITE_OK ||
        sqlite_bind_text_borrowed(stmt, 4, value_text) != SQLITE_OK ||
-       sqlite3_bind_int64(stmt, 5, i64(tx)) != SQLITE_OK ||
-       sqlite3_bind_int(stmt, 6, c.int(added ? 1 : 0)) != SQLITE_OK {
+       sqlite3_bind_int64(stmt, 5, value_entity) != SQLITE_OK ||
+       sqlite3_bind_int64(stmt, 6, i64(tx)) != SQLITE_OK ||
+       sqlite3_bind_int(stmt, 7, c.int(added ? 1 : 0)) != SQLITE_OK {
         return false, sqlite_error_text(db, \"sqlite bind datom failed\")
     }
     if sqlite3_step(stmt) != SQLITE_DONE {
@@ -3472,7 +3495,7 @@ sqlite_prepare_insert_datom_raw :: proc(handle: rawptr) -> (rawptr, bool, string
     }
     db := (^SQLite3)(handle)
     stmt: ^SQLite3_Stmt
-    sql := \"INSERT INTO vev_datoms (log_index, e, a, value_text, tx, added) VALUES (?, ?, ?, ?, ?, ?)\"
+    sql := \"INSERT INTO vev_datoms (log_index, e, a, value_text, value_entity, tx, added) VALUES (?, ?, ?, ?, ?, ?, ?)\"
     sql_c, sql_c_ok := sqlite_cstring(sql)
     if !sql_c_ok {
         return nil, false, \"failed to allocate sqlite SQL text\"
@@ -3745,6 +3768,42 @@ sqlite_direct_frontier_log_indexes_raw :: proc(handle: rawptr, order_text: strin
     if len(entities) == 0 {
         return out, true, \"\"
     }
+    if len(entities) == 1 {
+        db := (^SQLite3)(handle)
+        stmt: ^SQLite3_Stmt
+        sql := \"\"
+        if order_text == \":eavt\" {
+            sql = \"SELECT d.log_index FROM vev_datoms d INDEXED BY vev_datoms_eavt WHERE d.e = ? AND d.a = ? ORDER BY d.value_text, d.tx, d.added\"
+        } else if order_text == \":vaet\" {
+            sql = \"SELECT d.log_index FROM vev_datoms d INDEXED BY vev_datoms_vaet_entity WHERE d.value_entity = ? AND d.a = ? ORDER BY d.e, d.tx, d.added\"
+        } else {
+            return out, false, \"sqlite direct frontier only supports :eavt and :vaet\"
+        }
+        sql_c, sql_c_ok := sqlite_cstring(sql)
+        if !sql_c_ok {
+            return out, false, \"failed to allocate sqlite direct frontier SQL text\"
+        }
+        defer delete(sql_c)
+        if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+            return out, false, sqlite_error_text(db, \"sqlite prepare direct frontier read failed\")
+        }
+        defer _ = sqlite3_finalize(stmt)
+        if sqlite3_bind_int64(stmt, 1, i64(entities[0])) != SQLITE_OK ||
+           sqlite_bind_text_borrowed(stmt, 2, attr) != SQLITE_OK {
+            return out, false, sqlite_error_text(db, \"sqlite bind direct frontier prefix failed\")
+        }
+        for {
+            rc := sqlite3_step(stmt)
+            if rc == SQLITE_DONE {
+                break
+            }
+            if rc != SQLITE_ROW {
+                return out, false, sqlite_error_text(db, \"sqlite direct frontier read failed\")
+            }
+            append(&out, int(sqlite3_column_int64(stmt, 0)))
+        }
+        return out, true, \"\"
+    }
     parts := make([dynamic]string, 0, len(entities) * 2 + 2)
     if order_text == \":eavt\" {
         append(&parts, \"WITH wanted(e, ordinal) AS (VALUES \")
@@ -3756,14 +3815,14 @@ sqlite_direct_frontier_log_indexes_raw :: proc(handle: rawptr, order_text: strin
         }
         append(&parts, \") SELECT d.log_index FROM wanted JOIN vev_datoms d INDEXED BY vev_datoms_eavt ON d.e = wanted.e AND d.a = ? ORDER BY wanted.ordinal, d.value_text, d.tx, d.added\")
     } else if order_text == \":vaet\" {
-        append(&parts, \"WITH wanted(value_text, ordinal) AS (VALUES \")
-        for _, index in entities {
+        append(&parts, \"WITH wanted(value_entity, ordinal) AS (VALUES \")
+        for entity, index in entities {
             if index > 0 {
                 append(&parts, \",\")
             }
-            append(&parts, fmt.tprintf(\"(?,%d)\", index))
+            append(&parts, fmt.tprintf(\"(%d,%d)\", entity, index))
         }
-        append(&parts, \") SELECT d.log_index FROM wanted JOIN vev_datoms d INDEXED BY vev_datoms_vaet ON d.value_text = wanted.value_text AND d.a = ? ORDER BY wanted.ordinal, d.e, d.tx, d.added\")
+        append(&parts, \") SELECT d.log_index FROM wanted JOIN vev_datoms d INDEXED BY vev_datoms_vaet_entity ON d.value_entity = wanted.value_entity AND d.a = ? ORDER BY wanted.ordinal, d.e, d.tx, d.added\")
     } else {
         delete(parts)
         return out, false, \"sqlite direct frontier only supports :eavt and :vaet\"
@@ -3787,13 +3846,7 @@ sqlite_direct_frontier_log_indexes_raw :: proc(handle: rawptr, order_text: strin
             return out, false, sqlite_error_text(db, \"sqlite bind direct eavt frontier attr failed\")
         }
     } else {
-        for entity, index in entities {
-            value_text := fmt.tprintf(\"[:vev/entity %d]\", entity)
-            if sqlite_bind_text_borrowed(stmt, c.int(index + 1), value_text) != SQLITE_OK {
-                return out, false, sqlite_error_text(db, \"sqlite bind direct vaet frontier entity failed\")
-            }
-        }
-        if sqlite_bind_text_borrowed(stmt, c.int(len(entities) + 1), attr) != SQLITE_OK {
+        if sqlite_bind_text_borrowed(stmt, 1, attr) != SQLITE_OK {
             return out, false, sqlite_error_text(db, \"sqlite bind direct vaet frontier attr failed\")
         }
     }
@@ -3810,17 +3863,72 @@ sqlite_direct_frontier_log_indexes_raw :: proc(handle: rawptr, order_text: strin
     return out, true, \"\"
 }
 
-sqlite_direct_frontier_datom_parts_raw :: proc(handle: rawptr, order_text: string, entities: []u64, attr: string) -> ([dynamic]u64, [dynamic]string, [dynamic]string, [dynamic]u64, [dynamic]bool, bool, string) {
+sqlite_direct_frontier_datom_parts_raw :: proc(handle: rawptr, order_text: string, entities: []u64, attr: string) -> ([dynamic]u64, [dynamic]string, [dynamic]string, [dynamic]i64, [dynamic]u64, [dynamic]bool, bool, string) {
     entities_out := make([dynamic]u64, 0)
     attrs := make([dynamic]string, 0)
     values := make([dynamic]string, 0)
+    value_entities := make([dynamic]i64, 0)
     txs := make([dynamic]u64, 0)
     added := make([dynamic]bool, 0)
     if handle == nil {
-        return entities_out, attrs, values, txs, added, false, \"sqlite handle was nil\"
+        return entities_out, attrs, values, value_entities, txs, added, false, \"sqlite handle was nil\"
     }
     if len(entities) == 0 {
-        return entities_out, attrs, values, txs, added, true, \"\"
+        return entities_out, attrs, values, value_entities, txs, added, true, \"\"
+    }
+    if len(entities) == 1 {
+        db := (^SQLite3)(handle)
+        stmt: ^SQLite3_Stmt
+        sql := \"\"
+        if order_text == \":eavt\" {
+            sql = \"SELECT d.e, d.a, d.value_text, d.tx, d.added FROM vev_datoms d INDEXED BY vev_datoms_eavt WHERE d.e = ? AND d.a = ? ORDER BY d.value_text, d.tx, d.added\"
+        } else if order_text == \":vaet\" {
+            sql = \"SELECT d.e, d.a, d.value_entity, d.tx, d.added FROM vev_datoms d INDEXED BY vev_datoms_vaet_entity WHERE d.value_entity = ? AND d.a = ? ORDER BY d.e, d.tx, d.added\"
+        } else {
+            return entities_out, attrs, values, value_entities, txs, added, false, \"sqlite direct frontier only supports :eavt and :vaet\"
+        }
+        sql_c, sql_c_ok := sqlite_cstring(sql)
+        if !sql_c_ok {
+            return entities_out, attrs, values, value_entities, txs, added, false, \"failed to allocate sqlite direct frontier SQL text\"
+        }
+        defer delete(sql_c)
+        if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+            return entities_out, attrs, values, value_entities, txs, added, false, sqlite_error_text(db, \"sqlite prepare direct frontier read failed\")
+        }
+        defer _ = sqlite3_finalize(stmt)
+        if sqlite3_bind_int64(stmt, 1, i64(entities[0])) != SQLITE_OK ||
+           sqlite_bind_text_borrowed(stmt, 2, attr) != SQLITE_OK {
+            return entities_out, attrs, values, value_entities, txs, added, false, sqlite_error_text(db, \"sqlite bind direct frontier prefix failed\")
+        }
+        for {
+            rc := sqlite3_step(stmt)
+            if rc == SQLITE_DONE {
+                break
+            }
+            if rc != SQLITE_ROW {
+                return entities_out, attrs, values, value_entities, txs, added, false, sqlite_error_text(db, \"sqlite direct frontier read failed\")
+            }
+            a_text, a_ok := sqlite_column_text_owned(stmt, 1)
+            if !a_ok {
+                return entities_out, attrs, values, value_entities, txs, added, false, \"sqlite direct frontier row had null attr text\"
+            }
+            append(&entities_out, u64(sqlite3_column_int64(stmt, 0)))
+            append(&attrs, a_text)
+            if order_text == \":vaet\" {
+                append(&value_entities, sqlite3_column_int64(stmt, 2))
+            } else {
+                value_text, value_ok := sqlite_column_text_owned(stmt, 2)
+                if !value_ok {
+                    delete(a_text)
+                    return entities_out, attrs, values, value_entities, txs, added, false, \"sqlite direct frontier row had null value text\"
+                }
+                append(&values, value_text)
+                append(&value_entities, -1)
+            }
+            append(&txs, u64(sqlite3_column_int64(stmt, 3)))
+            append(&added, sqlite3_column_int(stmt, 4) != 0)
+        }
+        return entities_out, attrs, values, value_entities, txs, added, true, \"\"
     }
     parts := make([dynamic]string, 0, len(entities) * 2 + 2)
     if order_text == \":eavt\" {
@@ -3833,17 +3941,17 @@ sqlite_direct_frontier_datom_parts_raw :: proc(handle: rawptr, order_text: strin
         }
         append(&parts, \") SELECT d.e, d.a, d.value_text, d.tx, d.added FROM wanted JOIN vev_datoms d INDEXED BY vev_datoms_eavt ON d.e = wanted.e AND d.a = ? ORDER BY wanted.ordinal, d.value_text, d.tx, d.added\")
     } else if order_text == \":vaet\" {
-        append(&parts, \"WITH wanted(value_text, ordinal) AS (VALUES \")
-        for _, index in entities {
+        append(&parts, \"WITH wanted(value_entity, ordinal) AS (VALUES \")
+        for entity, index in entities {
             if index > 0 {
                 append(&parts, \",\")
             }
-            append(&parts, fmt.tprintf(\"(?,%d)\", index))
+            append(&parts, fmt.tprintf(\"(%d,%d)\", entity, index))
         }
-        append(&parts, \") SELECT d.e, d.a, d.value_text, d.tx, d.added FROM wanted JOIN vev_datoms d INDEXED BY vev_datoms_vaet ON d.value_text = wanted.value_text AND d.a = ? ORDER BY wanted.ordinal, d.e, d.tx, d.added\")
+        append(&parts, \") SELECT d.e, d.a, d.value_entity, d.tx, d.added FROM wanted JOIN vev_datoms d INDEXED BY vev_datoms_vaet_entity ON d.value_entity = wanted.value_entity AND d.a = ? ORDER BY wanted.ordinal, d.e, d.tx, d.added\")
     } else {
         delete(parts)
-        return entities_out, attrs, values, txs, added, false, \"sqlite direct frontier only supports :eavt and :vaet\"
+        return entities_out, attrs, values, value_entities, txs, added, false, \"sqlite direct frontier only supports :eavt and :vaet\"
     }
     sql := strings.concatenate(parts[:])
     delete(parts)
@@ -3852,26 +3960,20 @@ sqlite_direct_frontier_datom_parts_raw :: proc(handle: rawptr, order_text: strin
     stmt: ^SQLite3_Stmt
     sql_c, sql_c_ok := sqlite_cstring(sql)
     if !sql_c_ok {
-        return entities_out, attrs, values, txs, added, false, \"failed to allocate sqlite direct frontier SQL text\"
+        return entities_out, attrs, values, value_entities, txs, added, false, \"failed to allocate sqlite direct frontier SQL text\"
     }
     defer delete(sql_c)
     if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
-        return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite prepare direct frontier read failed\")
+        return entities_out, attrs, values, value_entities, txs, added, false, sqlite_error_text(db, \"sqlite prepare direct frontier read failed\")
     }
     defer _ = sqlite3_finalize(stmt)
     if order_text == \":eavt\" {
         if sqlite_bind_text_borrowed(stmt, 1, attr) != SQLITE_OK {
-            return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite bind direct eavt frontier attr failed\")
+            return entities_out, attrs, values, value_entities, txs, added, false, sqlite_error_text(db, \"sqlite bind direct eavt frontier attr failed\")
         }
     } else {
-        for entity, index in entities {
-            value_text := fmt.tprintf(\"[:vev/entity %d]\", entity)
-            if sqlite_bind_text_borrowed(stmt, c.int(index + 1), value_text) != SQLITE_OK {
-                return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite bind direct vaet frontier entity failed\")
-            }
-        }
-        if sqlite_bind_text_borrowed(stmt, c.int(len(entities) + 1), attr) != SQLITE_OK {
-            return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite bind direct vaet frontier attr failed\")
+        if sqlite_bind_text_borrowed(stmt, 1, attr) != SQLITE_OK {
+            return entities_out, attrs, values, value_entities, txs, added, false, sqlite_error_text(db, \"sqlite bind direct vaet frontier attr failed\")
         }
     }
     for {
@@ -3880,16 +3982,72 @@ sqlite_direct_frontier_datom_parts_raw :: proc(handle: rawptr, order_text: strin
             break
         }
         if rc != SQLITE_ROW {
-            return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite direct frontier read failed\")
+            return entities_out, attrs, values, value_entities, txs, added, false, sqlite_error_text(db, \"sqlite direct frontier read failed\")
         }
         a_text, a_ok := sqlite_column_text_owned(stmt, 1)
         if !a_ok {
-            return entities_out, attrs, values, txs, added, false, \"sqlite direct frontier row had null attr text\"
+            return entities_out, attrs, values, value_entities, txs, added, false, \"sqlite direct frontier row had null attr text\"
+        }
+        append(&entities_out, u64(sqlite3_column_int64(stmt, 0)))
+        append(&attrs, a_text)
+        if order_text == \":vaet\" {
+            append(&value_entities, sqlite3_column_int64(stmt, 2))
+        } else {
+            value_text, value_ok := sqlite_column_text_owned(stmt, 2)
+            if !value_ok {
+                delete(a_text)
+                return entities_out, attrs, values, value_entities, txs, added, false, \"sqlite direct frontier row had null value text\"
+            }
+            append(&values, value_text)
+            append(&value_entities, -1)
+        }
+        append(&txs, u64(sqlite3_column_int64(stmt, 3)))
+        append(&added, sqlite3_column_int(stmt, 4) != 0)
+    }
+    return entities_out, attrs, values, value_entities, txs, added, true, \"\"
+}
+
+sqlite_attr_string_contains_datom_parts_raw :: proc(handle: rawptr, attr: string, search: string) -> ([dynamic]u64, [dynamic]string, [dynamic]string, [dynamic]u64, [dynamic]bool, bool, string) {
+    entities_out := make([dynamic]u64, 0)
+    attrs := make([dynamic]string, 0)
+    values := make([dynamic]string, 0)
+    txs := make([dynamic]u64, 0)
+    added := make([dynamic]bool, 0)
+    if handle == nil {
+        return entities_out, attrs, values, txs, added, false, \"sqlite handle was nil\"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := \"SELECT e, a, value_text, tx, added FROM vev_datoms WHERE a = ? AND added = 1 AND instr(lower(value_text), lower(?)) > 0 ORDER BY log_index, id\"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return entities_out, attrs, values, txs, added, false, \"failed to allocate sqlite attr string contains SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite prepare attr string contains read failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    if sqlite_bind_text_borrowed(stmt, 1, attr) != SQLITE_OK ||
+       sqlite_bind_text_borrowed(stmt, 2, search) != SQLITE_OK {
+        return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite bind attr string contains read failed\")
+    }
+    for {
+        rc := sqlite3_step(stmt)
+        if rc == SQLITE_DONE {
+            break
+        }
+        if rc != SQLITE_ROW {
+            return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite attr string contains read failed\")
+        }
+        a_text, a_ok := sqlite_column_text_owned(stmt, 1)
+        if !a_ok {
+            return entities_out, attrs, values, txs, added, false, \"sqlite attr string contains row had null attr text\"
         }
         value_text, value_ok := sqlite_column_text_owned(stmt, 2)
         if !value_ok {
             delete(a_text)
-            return entities_out, attrs, values, txs, added, false, \"sqlite direct frontier row had null value text\"
+            return entities_out, attrs, values, txs, added, false, \"sqlite attr string contains row had null value text\"
         }
         append(&entities_out, u64(sqlite3_column_int64(stmt, 0)))
         append(&attrs, a_text)
@@ -3900,7 +4058,7 @@ sqlite_direct_frontier_datom_parts_raw :: proc(handle: rawptr, order_text: strin
     return entities_out, attrs, values, txs, added, true, \"\"
 }
 
-sqlite_step_datom_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, log_index: i64, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
+sqlite_step_datom_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, log_index: i64, e: u64, a: string, value_text: string, value_entity: i64, tx: u64, added: bool) -> (bool, string) {
     if handle == nil || stmt_handle == nil {
         return false, \"sqlite handle was nil\"
     }
@@ -3912,8 +4070,9 @@ sqlite_step_datom_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, log_inde
        sqlite3_bind_int64(stmt, 2, i64(e)) != SQLITE_OK ||
        sqlite_bind_text_borrowed(stmt, 3, a) != SQLITE_OK ||
        sqlite_bind_text_borrowed(stmt, 4, value_text) != SQLITE_OK ||
-       sqlite3_bind_int64(stmt, 5, i64(tx)) != SQLITE_OK ||
-       sqlite3_bind_int(stmt, 6, c.int(added ? 1 : 0)) != SQLITE_OK {
+       sqlite3_bind_int64(stmt, 5, value_entity) != SQLITE_OK ||
+       sqlite3_bind_int64(stmt, 6, i64(tx)) != SQLITE_OK ||
+       sqlite3_bind_int(stmt, 7, c.int(added ? 1 : 0)) != SQLITE_OK {
         return false, sqlite_error_text(db, \"sqlite bind datom failed\")
     }
     if sqlite3_step(stmt) != SQLITE_DONE {
@@ -6426,7 +6585,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return false open-error))
     (for [datom index db.datoms]
       (let [value-text (value-serializable-text datom.v)
-            [insert-ok insert-error] (sqlite-insert-datom-raw handle (i64 index) datom.e datom.a value-text datom.tx datom.added)]
+            value-entity (sqlite-datom-value-entity-index datom)
+            [insert-ok insert-error] (sqlite-insert-datom-raw handle (i64 index) datom.e datom.a value-text value-entity datom.tx datom.added)]
         (delete value-text)
         (when (not insert-ok)
           (sqlite-rollback-close-raw handle)
@@ -7109,6 +7269,11 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
             (return false insert-error))))
       (return true ""))))
 
+(defn sqlite-datom-value-entity-index [datom: Datom] -> i64
+  (if (= datom.v.kind .Entity)
+    (i64 datom.v.entity)
+    -1))
+
 (defn insert-sqlite-tx-with-stmts! [handle: rawptr, stmts: ^SQLite-Direct-Write-Stmts, tx: u64] -> [ok: bool, error: string]
   (if (= stmts nil)
     (sqlite-insert-tx-raw handle tx)
@@ -7116,13 +7281,14 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 
 (defn append-sqlite-datoms-with-stmts! [handle: rawptr, stmts: ^SQLite-Direct-Write-Stmts, base-count: int, datoms: []Datom] -> [ok: bool, error: string]
   (for [datom index datoms]
-    (let [value-text (value-serializable-text datom.v)]
+    (let [value-text (value-serializable-text datom.v)
+          value-entity (sqlite-datom-value-entity-index datom)]
       (if (= stmts nil)
-        (let [[insert-ok insert-error] (sqlite-insert-datom-raw handle (i64 (+ base-count index)) datom.e datom.a value-text datom.tx datom.added)]
+        (let [[insert-ok insert-error] (sqlite-insert-datom-raw handle (i64 (+ base-count index)) datom.e datom.a value-text value-entity datom.tx datom.added)]
           (delete value-text)
           (when (not insert-ok)
             (return false insert-error)))
-        (let [[insert-ok insert-error] (sqlite-step-datom-stmt-raw handle stmts^.datom-stmt (i64 (+ base-count index)) datom.e datom.a value-text datom.tx datom.added)]
+        (let [[insert-ok insert-error] (sqlite-step-datom-stmt-raw handle stmts^.datom-stmt (i64 (+ base-count index)) datom.e datom.a value-text value-entity datom.tx datom.added)]
           (delete value-text)
           (when (not insert-ok)
             (return false insert-error))))))
@@ -7138,7 +7304,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (return false count-error))
       (for [datom index datoms]
         (let [value-text (value-serializable-text datom.v)
-              [insert-ok insert-error] (sqlite-insert-datom-raw handle (i64 (+ (int base-count) index)) datom.e datom.a value-text datom.tx datom.added)]
+              value-entity (sqlite-datom-value-entity-index datom)
+              [insert-ok insert-error] (sqlite-insert-datom-raw handle (i64 (+ (int base-count) index)) datom.e datom.a value-text value-entity datom.tx datom.added)]
           (delete value-text)
           (when (not insert-ok)
             (sqlite-rollback-close-raw handle)
@@ -9096,9 +9263,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (delete moved))
 
 (defn sqlite-direct-frontier-datoms [handle: rawptr, order-text: string, entities: []u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
-  (let [[loaded-entities attrs value-texts txs added loaded-ok loaded-error] (sqlite-direct-frontier-datom-parts-raw handle order-text entities attr)
+  (let [[loaded-entities attrs value-texts value-entities txs added loaded-ok loaded-error] (sqlite-direct-frontier-datom-parts-raw handle order-text entities attr)
         datoms (make [dynamic]Datom 0 (count loaded-entities))]
     (defer (delete loaded-entities))
+    (defer (delete value-entities))
     (let [moved-attrs (arr.repeat (count attrs) false)]
       (defer (delete-owned-strings-array-with-moved attrs moved-attrs))
       (defer (delete-owned-strings-array value-texts))
@@ -9109,12 +9277,25 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
         (return (make [dynamic]Datom) false loaded-error))
       (for [_ index loaded-entities]
         (when (or (>= index (count attrs))
-                  (>= index (count value-texts))
+                  (and (not (= order-text ":vaet"))
+                       (>= index (count value-texts)))
+                  (>= index (count value-entities))
                   (>= index (count txs))
                   (>= index (count added)))
           (delete-owned-datoms datoms)
           (return (make [dynamic]Datom) false "sqlite direct frontier datom parts were uneven"))
-        (let [[value value-ok value-error] (value-from-owned-serial-text value-texts[index])]
+        (let [value (Value {})
+              value-ok false
+              value-error ""]
+          (if (and (= order-text ":vaet")
+                   (>= value-entities[index] 0))
+            (do
+              (set! value (value-entity (u64 value-entities[index])))
+              (set! value-ok true))
+            (let [[parsed parsed-ok parsed-error] (value-from-owned-serial-text value-texts[index])]
+              (set! value parsed)
+              (set! value-ok parsed-ok)
+              (set! value-error parsed-error)))
           (when (not value-ok)
             (delete-owned-datoms datoms)
             (return (make [dynamic]Datom) false value-error))
@@ -10540,16 +10721,35 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return out true ""))))
 
 (defn sqlite-db-snapshot-attr-string-contains-datoms [snapshot: ^SQLite-DB-Snapshot, attr: string, search: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
-  (let [[row-text row-ok row-error] (sqlite-load-attr-string-contains-rows-text-raw snapshot^.indexes.handle attr search)]
-    (when (not row-ok)
-      (return (make [dynamic]Datom) false row-error))
-    (defer (delete row-text))
-    (let [[candidate-db parsed-ok parsed-error] (from-serializable-text row-text)]
-      (when (not parsed-ok)
-        (return (make [dynamic]Datom) false parsed-error))
-      (let [out (clone-datoms candidate-db.datoms)]
-        (delete-owned-db candidate-db)
-        (return out true "")))))
+  (let [[entities attrs value-texts txs added loaded-ok loaded-error] (sqlite_attr_string_contains_datom_parts_raw snapshot^.indexes.handle attr search)
+        datoms (make [dynamic]Datom 0 (count entities))]
+    (defer (delete entities))
+    (let [moved-attrs (arr.repeat (count attrs) false)]
+      (defer (delete-owned-strings-array-with-moved attrs moved-attrs))
+      (defer (delete-owned-strings-array value-texts))
+      (defer (delete txs))
+      (defer (delete added))
+      (when (not loaded-ok)
+        (delete-owned-datoms datoms)
+        (return (make [dynamic]Datom) false loaded-error))
+      (for [_ index entities]
+        (when (or (>= index (count attrs))
+                  (>= index (count value-texts))
+                  (>= index (count txs))
+                  (>= index (count added)))
+          (delete-owned-datoms datoms)
+          (return (make [dynamic]Datom) false "sqlite attr string contains datom parts were uneven"))
+        (let [[value value-ok value-error] (value-from-owned-serial-text value-texts[index])]
+          (when (not value-ok)
+            (delete-owned-datoms datoms)
+            (return (make [dynamic]Datom) false value-error))
+          (set! moved-attrs[index] true)
+          (arr.push! datoms (Datom {e: entities[index]
+                                    a: attrs[index]
+                                    v: value
+                                    tx: txs[index]
+                                    added: added[index]}))))
+      (return datoms true ""))))
 
 (defn sqlite-db-snapshot-entity-attr-datoms [snapshot: ^SQLite-DB-Snapshot, entity: u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
   (let [[low high range-ok range-error] (sqlite-db-snapshot-eavt-entity-range snapshot entity)]
