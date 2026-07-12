@@ -174,7 +174,7 @@
   [^DB db]
   (->DB (:engine db) (.retain (:native db))))
 
-(defrecord PreparedQuery [^Vev engine native]
+(defrecord PreparedQuery [^Vev engine native query]
   java.lang.AutoCloseable
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
@@ -666,7 +666,7 @@
   "Prepare a query from Clojure data or EDN text."
   [source query]
   (let [engine (:engine source)]
-    (->PreparedQuery engine (.prepare engine (edn-text query)))))
+    (->PreparedQuery engine (.prepare engine (edn-text query)) query)))
 
 (defn prepared-edn
   "Return the portable EDN-ish parser value for a prepared query or pull pattern."
@@ -721,6 +721,9 @@
 
 (defn- query-in-forms [query]
   (cond
+    (instance? PreparedQuery query)
+    (query-in-forms (:query query))
+
     (map? query)
     (:in query)
 
@@ -742,6 +745,9 @@
 
 (defn- query-find-forms [query]
   (cond
+    (instance? PreparedQuery query)
+    (query-find-forms (:query query))
+
     (map? query)
     (:find query)
 
@@ -986,6 +992,7 @@
                                                      (rest items)))}
                             (recur (rest items))))))]
     (cond
+      (instance? PreparedQuery query) (query-return-map (:query query))
       (map? query) (from-map query)
       (vector? query) (from-vector query)
       (string? query) (try
@@ -1863,16 +1870,17 @@
       (if (instance? Log source)
         (log-query-rows source query inputs)
         (if (instance? PreparedQuery query)
-          (prepared-query-output source query inputs
-                                 rows-from-result
-                                 entity-column-rows
-                                 string-column-rows
-                                 entity-int-pair-rows
-                                 entity-string-pair-rows
-                                 string-int-pair-rows
-                                 string-string-pair-rows
-                                 entity-string-int-triple-rows
-                                 string-string-int-triple-rows)
+          (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
+            (query-output source query rules inputs
+                          rows-from-result
+                          entity-column-rows
+                          string-column-rows
+                          entity-int-pair-rows
+                          entity-string-pair-rows
+                          string-int-pair-rows
+                          string-string-pair-rows
+                          entity-string-int-triple-rows
+                          string-string-int-triple-rows))
           (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
             (with-open [prepared (prepare source query)]
               (let [result (query-output-with-auto-fns source query prepared rules inputs
@@ -1899,16 +1907,41 @@
       (if (instance? Log source)
         (log-query-output source query inputs)
         (if (instance? PreparedQuery query)
-          (prepared-query-output source query inputs
-                                 q-from-result
-                                 entity-column-set
-                                 string-column-set
-                                 entity-int-pair-set
-                                 entity-string-pair-set
-                                 string-int-pair-set
-                                 string-string-pair-set
-                                 entity-string-int-triple-set
-                                 string-string-int-triple-set)
+          (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
+            (if-let [return-map (query-return-map query)]
+              (let [result (query-output source query rules inputs
+                                         rows-from-result
+                                         entity-column-rows
+                                         string-column-rows
+                                         entity-int-pair-rows
+                                         entity-string-pair-rows
+                                         string-int-pair-rows
+                                         string-string-pair-rows
+                                         entity-string-int-triple-rows
+                                         string-string-int-triple-rows)]
+                (keyed-set return-map result))
+              (if (= :relation (query-find-shape query))
+                (query-output source query rules inputs
+                              q-from-result
+                              entity-column-set
+                              string-column-set
+                              entity-int-pair-set
+                              entity-string-pair-set
+                              string-int-pair-set
+                              string-string-pair-set
+                              entity-string-int-triple-set
+                              string-string-int-triple-set)
+                (let [result (query-output source query rules inputs
+                                           rows-from-result
+                                           entity-column-rows
+                                           string-column-rows
+                                           entity-int-pair-rows
+                                           entity-string-pair-rows
+                                           string-int-pair-rows
+                                           string-string-pair-rows
+                                           entity-string-int-triple-rows
+                                           string-string-int-triple-rows)]
+                  (apply-find-shape query result)))))
           (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
             (with-open [prepared (prepare source query)]
               (if-let [return-map (query-return-map query)]
@@ -1925,15 +1958,15 @@
                   (keyed-set return-map result))
                 (if (= :relation (query-find-shape query))
                   (query-output-with-auto-fns source query prepared rules inputs
-                                             q-from-result
-                                             entity-column-set
-                                             string-column-set
-                                             entity-int-pair-set
-                                             entity-string-pair-set
-                                             string-int-pair-set
-                                             string-string-pair-set
-                                             entity-string-int-triple-set
-                                             string-string-int-triple-set)
+                                              q-from-result
+                                              entity-column-set
+                                              string-column-set
+                                              entity-int-pair-set
+                                              entity-string-pair-set
+                                              string-int-pair-set
+                                              string-string-pair-set
+                                              entity-string-int-triple-set
+                                              string-string-int-triple-set)
                   (let [result (query-output-with-auto-fns source query prepared rules inputs
                                                            rows-from-result
                                                            entity-column-rows
@@ -2009,8 +2042,12 @@
   [query source & inputs]
   (let [{:keys [query source inputs]} (normalize-query-call query source inputs)]
     (if (instance? PreparedQuery query)
-      (with-open [result (apply query-result source query inputs)]
-        (clj-value (.scalar result)))
+      (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
+        (if rules
+          (with-open [result (apply query-result-with-rules source query rules inputs)]
+            (clj-value (.scalar result)))
+          (with-open [result (apply query-result source query inputs)]
+            (clj-value (.scalar result)))))
       (let [{rules :rules inputs :inputs} (split-rules-input query (vec inputs))]
         (with-open [prepared (prepare source query)]
           (if rules

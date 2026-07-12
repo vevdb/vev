@@ -24,8 +24,8 @@
 
     (with-open [conn (vev/create-conn lib-path)]
       (let [tx (vev/transact conn
-                              [{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
-                               {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}])]
+                             [{:db/id 1 :user/name "Ada" :user/email "ada@example.com"}
+                              {:db/id 2 :user/name "Grace" :user/email "grace@example.com"}])]
         (println "tx:" tx)
         (when-not (and (:ok tx) (integer? (:tx tx)) (map? (:tempids tx)))
           (throw (ex-info "unexpected transaction report" {:report tx}))))
@@ -78,23 +78,23 @@
           (throw (ex-info "unexpected query map keyed output" {:rows keyed}))))
 
       (vev/transact conn
-                     [[:db/add 90 :db/ident :user/email]
-                      [:db/add 90 :db/unique :db.unique/identity]])
+                    [[:db/add 90 :db/ident :user/email]
+                     [:db/add 90 :db/unique :db.unique/identity]])
 
       (vev/transact conn
-                     [[:db/add 91 :db/ident :user/status]
-                      [:db/add 91 :db/unique :db.unique/identity]
-                      [:db/add 92 :db/ident :user/code]
-                      [:db/add 92 :db/unique :db.unique/identity]
-                      [:db/add 1 :user/status :active]
-                      [:db/add 2 :user/status :inactive]
-                      [:db/add 1 :user/code 1001]
-                      [:db/add 2 :user/code 1002]])
+                    [[:db/add 91 :db/ident :user/status]
+                     [:db/add 91 :db/unique :db.unique/identity]
+                     [:db/add 92 :db/ident :user/code]
+                     [:db/add 92 :db/unique :db.unique/identity]
+                     [:db/add 1 :user/status :active]
+                     [:db/add 2 :user/status :inactive]
+                     [:db/add 1 :user/code 1001]
+                     [:db/add 2 :user/code 1002]])
 
       (vev/transact conn
-                     [[:db/add 100 :db/ident :user/friend]
-                      [:db/add 100 :db/valueType :db.type/ref]
-                      [:db/add 1 :user/friend 2]])
+                    [[:db/add 100 :db/ident :user/friend]
+                     [:db/add 100 :db/valueType :db.type/ref]
+                     [:db/add 1 :user/friend 2]])
 
       (let [db (vev/db conn)]
         (with-open [ada (vev/entity db 1)
@@ -146,6 +146,19 @@
           (println "prepared rows:" rows)
           (when-not (= #{[2 "grace@example.com"]} rows)
             (throw (ex-info "unexpected prepared rows" {:rows rows}))))
+
+        (with-open [rule-query (vev/prepare conn
+                                            '[:find ?name
+                                              :in $ % ?email
+                                              :where (email-name ?email ?name)])]
+          (let [db (vev/db conn)
+                rules '[[(email-name ?email ?name)
+                         [?e :user/email ?email]
+                         [?e :user/name ?name]]]
+                rows (vev/q rule-query db rules "ada@example.com")]
+            (println "prepared rule rows:" rows)
+            (when-not (= #{["Ada"]} rows)
+              (throw (ex-info "unexpected prepared rule rows" {:rows rows})))))
 
         (let [db (vev/db conn)
               pulled (vev/pull db
@@ -262,7 +275,7 @@
                                               :where [?e :user/email ?email]])
                     snapshot (vev/db conn)]
           (vev/transact conn
-                         [{:db/id 3 :user/name "Alan" :user/email "alan@example.com"}])
+                        [{:db/id 3 :user/name "Alan" :user/email "alan@example.com"}])
           (let [current (vev/db conn)
                 current-rows (count (vev/q current all-emails))
                 snapshot-rows (count (vev/q snapshot all-emails))]
@@ -279,9 +292,9 @@
           (when (not= {:backend :sqlite :path sqlite-path :basis-t 0 :tx-count 0 :tx-ids []} (vev/connection-info durable))
             (throw (ex-info "unexpected durable connection metadata" {})))
           (let [tx (vev/transact durable
-                                  [{:db/id 1
-                                    :user/name "Durable Ada"
-                                    :user/email "durable-ada@example.com"}])]
+                                 [{:db/id 1
+                                   :user/name "Durable Ada"
+                                   :user/email "durable-ada@example.com"}])]
             (when-not (:ok tx)
               (throw (ex-info "unexpected SQLite transaction report" {:report tx}))))
           (when (not= 1 (:basis-t (vev/connection-info durable)))
@@ -318,9 +331,9 @@
               (throw (ex-info "unexpected empty logical group reports"
                               {:reports reports}))))
           (let [reports (vev/transact-logical durable
-                                               [[{:db/id 6
-                                                  :user/name "Durable Katherine"}]
-                                                "[{:db/id 7 :user/name \"Durable Mary\"}]"])]
+                                              [[{:db/id 6
+                                                 :user/name "Durable Katherine"}]
+                                               "[{:db/id 7 :user/name \"Durable Mary\"}]"])]
             (when-not (and (= 2 (count reports))
                            (every? :ok reports))
               (throw (ex-info "unexpected durable logical EDN group reports"

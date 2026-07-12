@@ -157,6 +157,7 @@ CREATE INDEX IF NOT EXISTS vev_tx_meta_tx ON vev_tx_meta(tx, a);
 CREATE INDEX IF NOT EXISTS vev_datoms_eavt ON vev_datoms(e, a, value_text, tx, added);
 CREATE INDEX IF NOT EXISTS vev_datoms_aevt ON vev_datoms(a, e, value_text, tx, added);
 CREATE INDEX IF NOT EXISTS vev_datoms_avet ON vev_datoms(a, value_text, e, tx, added);
+CREATE INDEX IF NOT EXISTS vev_datoms_vaet ON vev_datoms(value_text, a, e, tx, added);
 CREATE TABLE IF NOT EXISTS vev_index_chunks (
   chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
   index_name TEXT NOT NULL,
@@ -3736,6 +3737,169 @@ sqlite_load_datoms_by_log_indexes_parts_raw :: proc(handle: rawptr, entries: []i
     return ordinals, entities, attrs, values, txs, added, true, \"\"
 }
 
+sqlite_direct_frontier_log_indexes_raw :: proc(handle: rawptr, order_text: string, entities: []u64, attr: string) -> ([dynamic]int, bool, string) {
+    out := make([dynamic]int)
+    if handle == nil {
+        return out, false, \"sqlite handle was nil\"
+    }
+    if len(entities) == 0 {
+        return out, true, \"\"
+    }
+    parts := make([dynamic]string, 0, len(entities) * 2 + 2)
+    if order_text == \":eavt\" {
+        append(&parts, \"WITH wanted(e, ordinal) AS (VALUES \")
+        for entity, index in entities {
+            if index > 0 {
+                append(&parts, \",\")
+            }
+            append(&parts, fmt.tprintf(\"(%d,%d)\", entity, index))
+        }
+        append(&parts, \") SELECT d.log_index FROM wanted JOIN vev_datoms d INDEXED BY vev_datoms_eavt ON d.e = wanted.e AND d.a = ? ORDER BY wanted.ordinal, d.value_text, d.tx, d.added\")
+    } else if order_text == \":vaet\" {
+        append(&parts, \"WITH wanted(value_text, ordinal) AS (VALUES \")
+        for _, index in entities {
+            if index > 0 {
+                append(&parts, \",\")
+            }
+            append(&parts, fmt.tprintf(\"(?,%d)\", index))
+        }
+        append(&parts, \") SELECT d.log_index FROM wanted JOIN vev_datoms d INDEXED BY vev_datoms_vaet ON d.value_text = wanted.value_text AND d.a = ? ORDER BY wanted.ordinal, d.e, d.tx, d.added\")
+    } else {
+        delete(parts)
+        return out, false, \"sqlite direct frontier only supports :eavt and :vaet\"
+    }
+    sql := strings.concatenate(parts[:])
+    delete(parts)
+    defer delete(sql)
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return out, false, \"failed to allocate sqlite direct frontier SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return out, false, sqlite_error_text(db, \"sqlite prepare direct frontier read failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    if order_text == \":eavt\" {
+        if sqlite_bind_text_borrowed(stmt, 1, attr) != SQLITE_OK {
+            return out, false, sqlite_error_text(db, \"sqlite bind direct eavt frontier attr failed\")
+        }
+    } else {
+        for entity, index in entities {
+            value_text := fmt.tprintf(\"[:vev/entity %d]\", entity)
+            if sqlite_bind_text_borrowed(stmt, c.int(index + 1), value_text) != SQLITE_OK {
+                return out, false, sqlite_error_text(db, \"sqlite bind direct vaet frontier entity failed\")
+            }
+        }
+        if sqlite_bind_text_borrowed(stmt, c.int(len(entities) + 1), attr) != SQLITE_OK {
+            return out, false, sqlite_error_text(db, \"sqlite bind direct vaet frontier attr failed\")
+        }
+    }
+    for {
+        rc := sqlite3_step(stmt)
+        if rc == SQLITE_DONE {
+            break
+        }
+        if rc != SQLITE_ROW {
+            return out, false, sqlite_error_text(db, \"sqlite direct frontier read failed\")
+        }
+        append(&out, int(sqlite3_column_int64(stmt, 0)))
+    }
+    return out, true, \"\"
+}
+
+sqlite_direct_frontier_datom_parts_raw :: proc(handle: rawptr, order_text: string, entities: []u64, attr: string) -> ([dynamic]u64, [dynamic]string, [dynamic]string, [dynamic]u64, [dynamic]bool, bool, string) {
+    entities_out := make([dynamic]u64, 0)
+    attrs := make([dynamic]string, 0)
+    values := make([dynamic]string, 0)
+    txs := make([dynamic]u64, 0)
+    added := make([dynamic]bool, 0)
+    if handle == nil {
+        return entities_out, attrs, values, txs, added, false, \"sqlite handle was nil\"
+    }
+    if len(entities) == 0 {
+        return entities_out, attrs, values, txs, added, true, \"\"
+    }
+    parts := make([dynamic]string, 0, len(entities) * 2 + 2)
+    if order_text == \":eavt\" {
+        append(&parts, \"WITH wanted(e, ordinal) AS (VALUES \")
+        for entity, index in entities {
+            if index > 0 {
+                append(&parts, \",\")
+            }
+            append(&parts, fmt.tprintf(\"(%d,%d)\", entity, index))
+        }
+        append(&parts, \") SELECT d.e, d.a, d.value_text, d.tx, d.added FROM wanted JOIN vev_datoms d INDEXED BY vev_datoms_eavt ON d.e = wanted.e AND d.a = ? ORDER BY wanted.ordinal, d.value_text, d.tx, d.added\")
+    } else if order_text == \":vaet\" {
+        append(&parts, \"WITH wanted(value_text, ordinal) AS (VALUES \")
+        for _, index in entities {
+            if index > 0 {
+                append(&parts, \",\")
+            }
+            append(&parts, fmt.tprintf(\"(?,%d)\", index))
+        }
+        append(&parts, \") SELECT d.e, d.a, d.value_text, d.tx, d.added FROM wanted JOIN vev_datoms d INDEXED BY vev_datoms_vaet ON d.value_text = wanted.value_text AND d.a = ? ORDER BY wanted.ordinal, d.e, d.tx, d.added\")
+    } else {
+        delete(parts)
+        return entities_out, attrs, values, txs, added, false, \"sqlite direct frontier only supports :eavt and :vaet\"
+    }
+    sql := strings.concatenate(parts[:])
+    delete(parts)
+    defer delete(sql)
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return entities_out, attrs, values, txs, added, false, \"failed to allocate sqlite direct frontier SQL text\"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite prepare direct frontier read failed\")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    if order_text == \":eavt\" {
+        if sqlite_bind_text_borrowed(stmt, 1, attr) != SQLITE_OK {
+            return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite bind direct eavt frontier attr failed\")
+        }
+    } else {
+        for entity, index in entities {
+            value_text := fmt.tprintf(\"[:vev/entity %d]\", entity)
+            if sqlite_bind_text_borrowed(stmt, c.int(index + 1), value_text) != SQLITE_OK {
+                return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite bind direct vaet frontier entity failed\")
+            }
+        }
+        if sqlite_bind_text_borrowed(stmt, c.int(len(entities) + 1), attr) != SQLITE_OK {
+            return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite bind direct vaet frontier attr failed\")
+        }
+    }
+    for {
+        rc := sqlite3_step(stmt)
+        if rc == SQLITE_DONE {
+            break
+        }
+        if rc != SQLITE_ROW {
+            return entities_out, attrs, values, txs, added, false, sqlite_error_text(db, \"sqlite direct frontier read failed\")
+        }
+        a_text, a_ok := sqlite_column_text_owned(stmt, 1)
+        if !a_ok {
+            return entities_out, attrs, values, txs, added, false, \"sqlite direct frontier row had null attr text\"
+        }
+        value_text, value_ok := sqlite_column_text_owned(stmt, 2)
+        if !value_ok {
+            delete(a_text)
+            return entities_out, attrs, values, txs, added, false, \"sqlite direct frontier row had null value text\"
+        }
+        append(&entities_out, u64(sqlite3_column_int64(stmt, 0)))
+        append(&attrs, a_text)
+        append(&values, value_text)
+        append(&txs, u64(sqlite3_column_int64(stmt, 3)))
+        append(&added, sqlite3_column_int(stmt, 4) != 0)
+    }
+    return entities_out, attrs, values, txs, added, true, \"\"
+}
+
 sqlite_step_datom_stmt_raw :: proc(handle: rawptr, stmt_handle: rawptr, log_index: i64, e: u64, a: string, value_text: string, tx: u64, added: bool) -> (bool, string) {
     if handle == nil || stmt_handle == nil {
         return false, \"sqlite handle was nil\"
@@ -6867,6 +7031,21 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   auto-maintenance-trigger: u64
 })
 
+(defn sqlite-direct-frontier-log-indexes-for-test [store: ^Store-Conn, order-text: string, entities: []u64, attr: string] -> [entries: [dynamic]int, ok: bool, error: string]
+  (when (not (= store^.kind .SQLite))
+    (return (make [dynamic]int) false "direct frontier test lookup requires a SQLite store"))
+  (sqlite-direct-frontier-log-indexes-raw store^.sqlite.handle order-text entities attr))
+
+(defn sqlite-direct-frontier-datoms-for-test [store: ^Store-Conn, order-text: string, entities: []u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (when (not (= store^.kind .SQLite))
+    (return (make [dynamic]Datom) false "direct frontier datom test lookup requires a SQLite store"))
+  (sqlite-direct-frontier-datoms store^.sqlite.handle order-text entities attr))
+
+(defn sqlite-load-datoms-by-log-indexes-parts-for-test [store: ^Store-Conn, entries: []int] -> [ordinals: [dynamic]int, entities: [dynamic]u64, attrs: [dynamic]string, value-texts: [dynamic]string, txs: [dynamic]u64, added: [dynamic]bool, ok: bool, error: string]
+  (when (not (= store^.kind .SQLite))
+    (return (make [dynamic]int) (make [dynamic]u64) (make [dynamic]string) (make [dynamic]string) (make [dynamic]u64) (make [dynamic]bool) false "batch datom test lookup requires a SQLite store"))
+  (sqlite-load-datoms-by-log-indexes-parts-raw store^.sqlite.handle entries))
+
 (defstruct Store-Tx-Listener {
   name: string
   reports: ^[dynamic]Store-Tx-Report
@@ -8915,6 +9094,37 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (delete value)))
   (delete values)
   (delete moved))
+
+(defn sqlite-direct-frontier-datoms [handle: rawptr, order-text: string, entities: []u64, attr: string] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [[loaded-entities attrs value-texts txs added loaded-ok loaded-error] (sqlite-direct-frontier-datom-parts-raw handle order-text entities attr)
+        datoms (make [dynamic]Datom 0 (count loaded-entities))]
+    (defer (delete loaded-entities))
+    (let [moved-attrs (arr.repeat (count attrs) false)]
+      (defer (delete-owned-strings-array-with-moved attrs moved-attrs))
+      (defer (delete-owned-strings-array value-texts))
+      (defer (delete txs))
+      (defer (delete added))
+      (when (not loaded-ok)
+        (delete-owned-datoms datoms)
+        (return (make [dynamic]Datom) false loaded-error))
+      (for [_ index loaded-entities]
+        (when (or (>= index (count attrs))
+                  (>= index (count value-texts))
+                  (>= index (count txs))
+                  (>= index (count added)))
+          (delete-owned-datoms datoms)
+          (return (make [dynamic]Datom) false "sqlite direct frontier datom parts were uneven"))
+        (let [[value value-ok value-error] (value-from-owned-serial-text value-texts[index])]
+          (when (not value-ok)
+            (delete-owned-datoms datoms)
+            (return (make [dynamic]Datom) false value-error))
+          (set! moved-attrs[index] true)
+          (arr.push! datoms (Datom {e: loaded-entities[index]
+                                    a: attrs[index]
+                                    v: value
+                                    tx: txs[index]
+                                    added: added[index]}))))
+      (return datoms true ""))))
 
 (defn sqlite-loaded-index-page-with-owned-datom-entries [handle: rawptr, stmt: rawptr, owned-entries: [dynamic]int, start: int, end: int] -> [page: SQLite-Loaded-Index-Page, ok: bool, error: string]
   (discard stmt)

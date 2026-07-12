@@ -18,8 +18,8 @@ Current upstream target:
 - section: `data queries`
 - status: all executable forms in this file are now represented in the Vev
   Clojure and Kvist workshop paths
-- current task: productize and improve the covered persistent comparison path,
-  not port more invented examples
+- current task: improve the covered persistent comparison path for the
+  rule-backed data-query rows, not port more invented examples
 
 Other upstream coverage already in this gate:
 
@@ -57,6 +57,9 @@ Covered behavior:
   disjunction, function expression, fulltext, missing?, transaction-log,
   dynamic attribute, and decomposing-query tutorial slices.
 - Clojure `vev.core` uses a Datomic-like API shape for the covered tutorial.
+  Prepared Clojure queries now retain their original query form, so
+  Datomic-style `%` rule inputs work for prepared `d/q`, `rows`, and `scalar`
+  calls instead of only for one-shot query forms.
 - Kvist uses native Vev package calls and has query-first literal Datalog forms
   for many covered sections. Some remaining Kvist examples intentionally still
   use EDN strings where they exercise the interop/parser surface or where a
@@ -80,25 +83,88 @@ Latest important performance status:
   `--warmup-runs`, and `--measure-runs`; use it for every performance claim.
 - `mbrainz-title-album-year-by-artist` is correct in Clojure, Kvist, and
   Datomic comparison: 93 rows, fingerprint `d2548ca97497433f`. Current Vev
-  stats: 7 source operators, 325 source-index scans, 449 clause candidates,
-  no binding materialization. Warmed Vev Clojure is about 31-33ms versus local
-  Datomic about 3.8-4.7ms.
+  stats after deeper ref-chain frontier activation: 7 source operators, 7
+  source-index scans, 449 clause candidates, no binding materialization. Warmed
+  Vev Clojure is about 7.9ms on a focused Datomic-inclusive run; local Datomic
+  was about 4.8ms on the same run.
 - `mbrainz-pre-1970-title-album-year` is correct in Clojure, Kvist, and
   Datomic comparison: 18 rows, fingerprint `4598839c2af58631`. Current Vev
-  stats: 7 source operators, 304 source-index scans, 428 clause candidates,
-  no binding materialization. Warmed Vev Clojure is about 27-28ms versus local
-  Datomic about 3.4-5.6ms.
-- The remaining bottleneck for these rows is not join cardinality; it is the
-  cost of many persisted SQLite EAVT/VAET point streams over sparse sorted
-  frontiers. The next storage primitive must batch exact `[entity attr]`
-  frontier reads without scanning a whole min/max span, collecting all datoms
-  before yielding, or multiplying `prefix-count * run-count` binary searches.
+  stats after exact-prefix frontier activation: 7 source operators, 7
+  source-index scans, 428 clause candidates, no binding materialization. Warmed
+  Vev Clojure is about 6.7ms on a focused skip-Datomic run; local Datomic was
+  previously about 3.4-5.6ms.
+- `mbrainz-track-release-rule` is correct in Clojure, Kvist, and Datomic
+  comparison: 93 rows, fingerprint `d2548ca97497433f`. Current Vev stats:
+  7 source-index scans, 6 source operators, 501 clause candidates, 1 rule call,
+  1 rule iteration, no binding materialization. Warmed Vev Clojure is about
+  28.3ms best on a focused skip-Datomic run and about 29.1ms best on a
+  focused Datomic-inclusive run after direct frontier payload reads, borrowed
+  owned-stream currents, and batched left-bound reverse-derived rule frontiers.
+  Local Datomic was about 4.1ms best on the same focused run.
+- `mbrainz-track-search-info` is correct in Clojure and Kvist validation:
+  92 rows, fingerprint `1d14f508a95941fd`. Current Vev stats: 7 source-index
+  scans, 6 source operators, 478 clause candidates, 2 rule calls, 2 rule
+  iterations, no binding materialization. Warmed Vev Clojure is about 72.7ms
+  best on a focused skip-Datomic run and about 75.2ms best on a focused
+  Datomic-inclusive run after the same changes. Local Datomic was about 7.9ms
+  best on the same focused run. The scalar-input `track-search` rule now
+  inlines before planning; the remaining time is in the bound `track-info` /
+  `track-release` rule path.
+- Prepared Clojure rule queries are now supported and covered by the Clojure
+  smoke test. Manual focused measurement shows preparation is not the main
+  remaining gap for these two rows: prepared rule calls only reduce the
+  measured Clojure path by about 1-2ms.
+- Simple non-recursive rule calls can be inlined before physical source
+  planning when they are uncorrelated with variables already bound at that
+  point in the query. Correlated rule calls stay on the rule engine because
+  blind inlining turns reusable rule evaluation into repeated per-row source
+  scans. Scalar `:in` variables are not treated as already-bound correlation
+  variables for this guard, so top-level rules like `(track-search ?search
+  ?track)` can inline while truly correlated calls still use the rule engine.
+  This is a generic planning guard, not a MusicBrainz special case.
+- Bound rule seed construction now stays in typed relation/column form instead
+  of converting the seed row through named `Binding` maps and back into typed
+  columns. The common alias-only case clones/reuses typed columns directly; the
+  fallback still handles value args, equality checks, wildcards, and rejected
+  lookup-ref args. This is a generic rule engine improvement, not a
+  MusicBrainz-specific branch.
+- Left-bound two-hop reverse-derived rule calls can now use batched VAET
+  frontier scans over the full bound entity list before falling back to the
+  row-by-row stream path. This follows the Datalevin reverse-ref join
+  principle and is generic by rule shape, but it did not materially improve the
+  current `track-release` / `track-info` timings by itself.
+- The direct SQLite exact-prefix lookup primitive is now active in eligible
+  persistent source frontier operators:
+  - source must be a current SQLite snapshot
+  - there must be no retractions in the snapshot
+  - order must be EAVT `(entity, attr)` or VAET `(target-entity, attr)`
+  - otherwise the engine falls back to the older source stream path
+- The active direct frontier operator now asks SQLite for the datom payloads
+  directly instead of reading matching log indexes and then doing a second
+  batch lookup by log index. Owned-datom streams also borrow the current datom
+  from their owned array instead of cloning each current datom. This is generic
+  source/stream work and is covered by focused storage and source tests.
+- This is generic source-operator work, not query-name or attribute-name
+  special casing. Focused storage and source tests cover the primitive and the
+  value/ref/star source-backed relation path; the MusicBrainz rows above verify
+  the same path against real persistent data.
+- Datalevin's useful implementation hint is its nested/indexed list shape:
+  query execution can ask storage for cheap prefix ranges and counts, then
+  merge-scan star-like attributes. Vev should copy that principle, adapted to
+  SQLite-backed immutable index chunks, rather than keep layering more point
+  lookups over the current manifest.
+- The existing Vev run manifest has run bounds and per-run attr ranges. That is
+  enough for broad attr scans, but not for sparse exact prefixes like
+  EAVT `[artist :artist/name]` or VAET `[release :medium/release]`. The next
+  manifest level needs persisted exact-prefix metadata for EAVT/VAET entity-ref
+  prefixes, or an equivalent page-local directory, so source operators can jump
+  directly to matching pages/runs.
 - A sparse-prefix stream that schedules prefixes by loading every child run's
-  first/last datoms is also the wrong physical shape for the current
-  MusicBrainz store. It proves the rows can be reduced to 18-93 real
-  candidates, but it spends too much time in pre-yield storage work. The next
-  attempt needs a persisted prefix/run directory or a true page-local cursor
-  that can find relevant runs without walking all run bounds first.
+  first/last datoms is the wrong physical shape for the current MusicBrainz
+  store. It proves the rows can be reduced to 18-93 real candidates, but it
+  spends too much time in pre-yield storage work. Do not revive that route
+  unless it is backed by persisted prefix/range metadata or a bounded page-local
+  jump primitive.
 - Do not route these rows through row-by-row cardinality-one point lookups,
   broad attr scans, or the inactive sparse-prefix scaffold unless focused
   measurement proves the generic path improves.
@@ -150,24 +216,37 @@ This gate is done when:
 
    Next useful engine work:
 
-   - implement a merge/manifest-aware cursor for exact EAVT `[entity attr]`
-     and VAET `[entity attr]` frontier reads
-   - the cursor must accept sorted prefixes, skip impossible runs by stored
-     bounds when available, keep per-run/page state, advance prefix and page
-     incrementally, and emit matching datoms lazily
+   - formalize focused Datomic comparison for the two target rows after each
+     storage/operator change: row count, fingerprint, Vev time, Datomic time,
+     and ratio
+   - continue improving bound/correlated rule-call execution for persistent
+     sources without losing the compact source stats above; the seed path is
+     typed now, source frontier payload reads avoid the extra log-index round
+     trip, and prepared Clojure rules are supported, so the remaining likely
+     directions are lower-overhead native rule invocation, rule-result reuse
+     within a query, and physical rule/operator planning that preserves indexed
+     source scans without expanding into per-row scans
+   - add a persisted exact-prefix directory for durable EAVT/VAET manifest
+     runs, or an equivalent page-local directory:
+     - EAVT key: `(entity, attr) -> run/root, low, high, count`
+     - VAET key for entity refs: `(target-entity, attr) -> run/root, low, high,
+       count`
+   - build that directory when manifest runs are created or maintained; old
+     stores may fall back to the current path until refreshed
+   - use the directory from source frontier operators before falling back to
+     dense span scans or ordinary per-prefix bounds
+   - the read cursor must accept sorted prefixes, keep per-run/page state,
+     advance prefix and page incrementally, and emit matching datoms lazily
    - the cursor must not scan the whole min/max entity span, collect all
-     frontier datoms up front, or do repeated `prefix-count * run-count` binary
-     searches
-   - the cursor must not load every child run's first/last datoms before
-     yielding; it needs stored prefix/range metadata or another bounded way to
-     jump to candidate runs
-   - success means both `mbrainz-title-album-year-by-artist` and
-     `mbrainz-pre-1970-title-album-year` still match Datomic row counts and
-     fingerprints, while warmed Vev Clojure moves materially below the current
-     27-33ms range
-   - after that, recheck `mbrainz-track-release-rule` and
-     `mbrainz-track-search-info`; only then decide whether broader star/value
-     joins or host/result materialization are the next blocker
+     frontier datoms up front, do repeated `prefix-count * run-count` binary
+     searches, or load every child run's first/last datoms before yielding
+   - after persisted exact-prefix frontiers work, extend the same physical shape toward
+     Datalevin-style star/merge scans so one entity frontier can retrieve
+     several attributes from the same EAVT pages without row/binding
+     materialization
+   - success means covered MusicBrainz rows still match Datomic row counts and
+     fingerprints, while warmed Vev Clojure stays close to local Datomic on the
+     same machine
    - keep all fixes keyed by query shape and indexes, never attribute names or
      exact query strings
 
