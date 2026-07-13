@@ -32,6 +32,18 @@
       (return true)))
   false)
 
+(defn source-branch-has-track-release-row? [result: vev.Result-Set, title: string, album: string, year: i64] -> bool
+  (for [row result.rows]
+    (when (and (= (count row.values) 3)
+               (= row.values[0].kind .String)
+               (= row.values[0].text title)
+               (= row.values[1].kind .String)
+               (= row.values[1].text album)
+               (= row.values[2].kind .Int)
+               (= row.values[2].int-value year))
+      (return true)))
+  false)
+
 (defn source-branch-has-text-any-column? [result: vev.Result-Set, text: string] -> bool
   (for [row result.rows]
     (for [value row.values]
@@ -1109,6 +1121,32 @@
     (t.is (= typed-stats.binding-materializations 0))
     (vev.delete-query-relation typed-rel)
     (vev.delete-query-shallow typed-query)
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)))
+
+(t.deftest source-backed-bound-reverse-derived-rule-preserves-left-bound-rows
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact-text
+            (addr conn)
+            "[[:db/add 10 :artist/name \"John Lennon\"] [:db/add 100 :track/artists 10] [:db/add 100 :track/name \"A\"] [:db/add 101 :track/artists 10] [:db/add 101 :track/name \"B\"] [:db/add 102 :track/artists 10] [:db/add 102 :track/name \"C\"] [:db/add 200 :medium/tracks 100] [:db/add 201 :medium/tracks 101] [:db/add 202 :medium/tracks 102] [:db/add 300 :release/media 200] [:db/add 300 :release/name \"Album A\"] [:db/add 300 :release/year 1968] [:db/add 301 :release/media 201] [:db/add 301 :release/name \"Album B\"] [:db/add 301 :release/year 1969] [:db/add 302 :release/media 202] [:db/add 302 :release/name \"Album C\"] [:db/add 302 :release/year 1970]]")
+        source (vev.resident-db-read-source (addr conn.db))
+        prepared (vev.prepare-query-text "[:find ?title ?album ?year :in $ % ?artist-name :where [?a :artist/name ?artist-name] [?t :track/artists ?a] [?t :track/name ?title] (track-release ?t ?r) [?r :release/name ?album] [?r :release/year ?year]]")
+        prepared-rules (vev.parse-rules-text "[[(track-release ?t ?r) [?m :medium/tracks ?t] [?r :release/media ?m]]]")
+        inputs ([]vev.Query-Input [(vev.query-input-scalar (vev.value-string "John Lennon"))])
+        result (vev.q-prepared-db-read-source-with-rules
+                 source
+                 prepared
+                 prepared-rules
+                 inputs)]
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (t.is result.ok result.error)
+    (t.is (= (count result.rows) 3))
+    (t.is (source-branch-has-track-release-row? result "A" "Album A" 1968))
+    (t.is (source-branch-has-track-release-row? result "B" "Album B" 1969))
+    (t.is (source-branch-has-track-release-row? result "C" "Album C" 1970))
     (vev.delete-result-set-owned-values result)
     (vev.delete-prepared-query-shallow prepared)
     (vev.delete-prepared-rules-shallow prepared-rules)))

@@ -98,27 +98,27 @@ Latest important performance status:
 - `mbrainz-track-release-rule` is correct in Clojure, Kvist, and Datomic
   comparison: 93 rows, fingerprint `d2548ca97497433f`. Current Vev stats:
   7 source-index scans, 6 source operators, 501 clause candidates, 1 rule call,
-  1 rule iteration, no binding materialization. Current focused comparison
-  after typed VAET direct-frontier payloads:
-  warmed Vev Clojure median about 10.4ms, local Datomic median about 6.0ms,
-  ratio about 1.7x. Prepared Vev timing is effectively the same as one-shot
-  `d/q`, so query parsing/preparation is not the main remaining cost. The
-  ratio moves with local Datomic variance, but the Vev absolute time is still
-  roughly 10ms.
+  1 rule iteration, no binding materialization. Latest focused comparison
+  after rejecting inactive rule-body chain-pair changes:
+  warmed Vev Clojure was 11.1ms versus local Datomic 4.8ms. Prepared Vev
+  timing is effectively the same as one-shot `d/q`, so query
+  parsing/preparation is not the main remaining cost.
 - `mbrainz-track-search-info` is correct in Clojure, Kvist, and Datomic
   comparison:
   92 rows, fingerprint `1d14f508a95941fd`. Current Vev stats: 7 source-index
   scans, 6 source operators, 478 clause candidates, 2 rule calls, 2 rule
   iterations, no binding materialization. Current focused comparison after
   removing the storage text round-trip for persistent fulltext candidates,
-  tightening seeded typed rule projection, and reading VAET direct-frontier
-  entity values from typed `value_entity` storage:
-  warmed Vev Clojure is roughly 35-38ms in focused runs, local Datomic is
-  roughly 8-10ms, ratio about 4x. Prepared Vev timing is effectively the same
-  as one-shot `d/q`, so query parsing/preparation is not the main remaining
-  cost. The scalar-input `track-search` rule can inline before planning; the
-  remaining time is in the bound `track-info` / `track-release` rule path, not
-  in query parsing, value parsing, or ordinary host result delivery.
+  tightening seeded typed rule projection, and reading EAVT/VAET direct-
+  frontier entity values from typed `value_entity` storage, plus typed batched
+  nested rule calls:
+  warmed Vev Clojure is roughly 35-44ms in focused runs; latest focused run
+  was 37.7ms versus local Datomic 10.2ms. Prepared Vev timing is effectively the
+  same as one-shot `d/q`, so query parsing/preparation is not the main
+  remaining cost. The scalar-input `track-search` rule can inline before
+  planning; the remaining time is in the bound `track-info` / `track-release`
+  rule path, not in query parsing, value parsing, direct-frontier attr reads,
+  or ordinary host result delivery.
 - Rule-backed persistent queries can now use the native column-batch path
   through ABI/Java/Clojure when the native batch builder can represent the
   result shape. The active three-column `mbrainz-track-release-rule` row
@@ -152,11 +152,57 @@ Latest important performance status:
   lookup-ref args. This is a generic rule engine improvement, not a
   MusicBrainz-specific branch. The passthrough branch now returns that already
   unique typed relation directly instead of running a second full-row dedupe.
+- Planned rule-body execution now tries to apply nested rule calls once to the
+  current typed relation batch before falling back to the older row-by-row
+  binding path. This keeps the rule engine on the same typed/operator track as
+  the main query engine for eligible rule calls. Focused measurement shows this
+  is useful structural cleanup, but it is not the active MusicBrainz
+  performance unlock; the remaining cost is still persistent storage/index
+  traversal for bound rule bodies.
 - Left-bound two-hop reverse-derived rule calls can now use batched VAET
   frontier scans over the full bound entity list before falling back to the
   row-by-row stream path. This follows the Datalevin reverse-ref join
   principle and is generic by rule shape, but it did not materially improve the
   current `track-release` / `track-info` timings by itself.
+- Left-bound, right-unbound two-hop reverse-derived rule calls can now extend
+  the incoming typed relation rows directly instead of always producing a
+  standalone derived relation and joining it back. This is the Vev equivalent
+  of Datalevin's batched link-step idea: preserve row identity through the
+  frontier scans. It is correct and generic by rule shape, but focused
+  measurement shows it is still not the active MusicBrainz performance unlock.
+  Current focused comparison after this change: `mbrainz-track-release-rule`
+  was about 10.2ms Vev versus 4.9ms Datomic; `mbrainz-track-search-info` was
+  about 37.7ms Vev versus 9.8ms Datomic. The remaining gap is now clearly in
+  nested rule/source planning and persisted rule-body index traversal, not in
+  the final relation join.
+- Adjacent rule-body clauses that share the same already-bound entity can now
+  run as one Datalevin-style same-entity EAVT value-pair operator: the incoming
+  typed relation supplies the entity frontier, storage reads both attributes
+  through bounded EAVT frontier scans, and the operator preserves row identity
+  while appending both value columns. This is generic rule-body engine work,
+  not attribute-name handling. It is correct for the focused source-backed rule
+  test and the MusicBrainz rows still match Datomic fingerprints, but it did
+  not materially improve `track-release` / `track-info` because those rules are
+  mostly chained reference joins rather than same-entity fanout joins. Keep the
+  operator, but do not treat it as the active MusicBrainz performance unlock.
+- A generic reverse-ref chain-pair operator for adjacent rule-body clauses like
+  `[?m :medium/tracks ?t]` then `[?r :release/media ?m]` was tested and
+  rejected for this active path. It compiled and kept correctness, but focused
+  stats and timings were unchanged because the active `track-release` row is
+  dispatched through the dedicated bound reverse-derived rule path before the
+  ordinary rule-body loop. Removing the eager local dedupe inside that hot path
+  was also tested and rejected: correctness held, but timings did not improve.
+  Do not retry this as another rule-body-pair hook unless the dispatcher shape
+  changes; the next useful work is below the rule dispatcher, in storage/index
+  prefix access or in a broader physical rule plan.
+- The older three-column multi-hop relation path now uses the same generic
+  indexed frontier propagation pattern as the newer final-filter/two-final
+  variants: bound entity lists flow through EAVT/VAET exact-prefix frontiers
+  instead of broad attr scans in the middle of the chain. This closes a real
+  physical-operator gap and follows Datalevin's merge/link scan principle, but
+  focused measurement shows it is still not the remaining MusicBrainz
+  performance unlock. The next step needs to be a higher-level rule/source
+  physical plan that can reuse/push bound rule relations directly.
 - The direct SQLite exact-prefix lookup primitive is now active in eligible
   persistent source frontier operators:
   - source must be a current SQLite snapshot
@@ -189,10 +235,14 @@ Latest important performance status:
   round-trip, but focused measurement shows it is only a small win for
   `mbrainz-track-search-info`. The remaining fix is still a better rule/source
   physical plan, not more host result polishing.
-- Persistent VAET direct-frontier candidates now come back with typed
-  `value_entity` payloads instead of reparsing `[:vev/entity ...]` text into
-  entity values. This removes another generic storage parse from reverse-ref
-  rule walks and is covered by the direct-frontier storage test, but focused
+- Persistent EAVT and VAET direct-frontier candidates now come back with typed
+  `value_entity` payloads for entity refs instead of reparsing
+  `[:vev/entity ...]` text into entity values. EAVT uses a covering
+  `(e, a, value_text, value_entity, tx, added)` frontier index so the typed
+  payload does not force per-row table lookups. Direct-frontier payload SQL no
+  longer selects the attr column because the attr is already fixed by the source
+  operator. This removes generic payload/parse work from forward and reverse
+  ref rule walks and is covered by the direct-frontier storage test, but focused
   measurement shows it is not the active MusicBrainz bottleneck.
 - This is generic source-operator work, not query-name or attribute-name
   special casing. Focused storage and source tests cover the primitive and the
@@ -213,12 +263,23 @@ Latest important performance status:
   roughly 88ms. Keep the correlated-call guard until Vev has SIP/prefix
   metadata or an equivalent indexed rule-body walk that can push bound values
   into storage without repeating source scans.
+- A direct relation-extension path for left-bound two-hop reverse-derived rules
+  was tested and rejected in the current dispatcher shape: it compiled, but it
+  collapsed `mbrainz-track-release-rule` from 93 rows to 1 because the generic
+  rule-call dispatcher expects a projected rule-result relation in that path.
+  This remains the right physical-operator direction, but the next attempt must
+  live where rule projection/correlation semantics are explicit and must have a
+  focused correctness test against the existing rule-result+join path before it
+  is enabled for MusicBrainz.
+  `source-backed-bound-reverse-derived-rule-preserves-left-bound-rows` now
+  guards the public source-backed rule result shape for this case.
 - The existing Vev run manifest has run bounds and per-run attr ranges. That is
   enough for broad attr scans, but not for sparse exact prefixes like
   EAVT `[artist :artist/name]` or VAET `[release :medium/release]`. The next
   manifest level needs persisted exact-prefix metadata for EAVT/VAET entity-ref
-  prefixes, or an equivalent page-local directory, so source operators can jump
-  directly to matching pages/runs.
+  prefixes, or an equivalent page-local directory / prepared multi-prefix
+  frontier strategy, so source operators can jump directly to matching
+  pages/runs.
 - A sparse-prefix stream that schedules prefixes by loading every child run's
   first/last datoms is the wrong physical shape for the current MusicBrainz
   store. It proves the rows can be reduced to 18-93 real candidates, but it
@@ -228,6 +289,9 @@ Latest important performance status:
 - Do not route these rows through row-by-row cardinality-one point lookups,
   broad attr scans, or the inactive sparse-prefix scaffold unless focused
   measurement proves the generic path improves.
+- Do not replace the current direct-frontier `wanted` CTE with a simple
+  `IN (...)` predicate: that loses duplicate/prefix-order semantics required
+  by the storage tests and did not improve the active MusicBrainz timings.
 
 ## Exit Criteria
 
@@ -285,11 +349,22 @@ This gate is done when:
    - continue improving bound/correlated rule-call execution for persistent
      sources without losing the compact source stats above; the seed path is
      typed now, source frontier payload reads avoid the extra log-index round
-     trip, VAET frontier entity payloads avoid text reparsing, and prepared
-     Clojure rules are supported, so the remaining likely directions are
-     lower-overhead native rule invocation, rule-result reuse within a query,
-     and physical rule/operator planning that preserves indexed source scans
-     without expanding into per-row scans
+     trip, EAVT/VAET frontier entity payloads avoid text reparsing, direct
+     frontiers do not read per-row attrs, prepared Clojure rules are
+     supported, and the remaining three-column multi-hop relation path uses
+     frontier propagation, so the remaining likely directions are persisted
+     exact-prefix metadata, rule-result reuse within a query when the same
+     bound relation recurs, and physical rule/operator planning that preserves
+     indexed source scans without expanding into per-row scans. Use
+     Datalevin's `MergeScanStep` / `LinkStep` and storage-level
+     `eav-scan-v` / `val-eq-scan-e` paths as the reference shape: bound tuple
+     values should feed storage scans directly, not become broad intermediate
+     rule results. Same-entity value-pair scans are now covered, but they are
+     not enough for the active rules. A local adjacent reverse-ref chain hook
+     was also measured and rejected because the active dispatcher bypasses that
+     rule-body loop; focus next on the storage/index prefix access used by the
+     existing bound reverse-derived path, or on a broader physical rule plan
+     that replaces the dedicated dispatcher.
    - continue direct typed relation output from physical rule plans, but do not
      treat host column batching as the main remaining blocker for the active
      rows; rule-backed prepared column batches now work and the focused
