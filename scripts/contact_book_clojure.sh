@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Copyright (c) Andreas Flakstad and Vev contributors
+# SPDX-License-Identifier: EPL-2.0
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+JAVA_OUT="$ROOT/build/examples/java"
+STORE="${1:-${TMPDIR:-/tmp}/vev-contact-book-clojure.vev}"
+
+"$ROOT/scripts/build_native_library.sh" --if-needed >/dev/null
+
+if [[ ! -f "$JAVA_OUT/dev/vevdb/vev/Vev.class" || "$ROOT/clients/java/src/main/java/dev/vevdb/vev/Vev.java" -nt "$JAVA_OUT/dev/vevdb/vev/Vev.class" ]]; then
+  javac \
+    --enable-preview \
+    --release 21 \
+    -d "$JAVA_OUT" \
+    "$ROOT/clients/java/src/main/java/dev/vevdb/vev/Vev.java"
+fi
+
+clojure \
+  -J--enable-preview \
+  -J--enable-native-access=ALL-UNNAMED \
+  -Sdeps "{:paths [\"$JAVA_OUT\" \"$ROOT/clients/clojure/src\" \"$ROOT/examples/clojure\"]}" \
+  -M -m contact-book "$STORE"

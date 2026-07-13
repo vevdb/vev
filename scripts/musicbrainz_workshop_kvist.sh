@@ -10,7 +10,7 @@ WORKLOAD="${2:-all}"
 
 if [[ ! -f "$STORE" ]]; then
   echo "missing persistent MusicBrainz Vev store: $STORE" >&2
-  echo "build it with bench/musicbrainz_import_subset.kvist and --sqlite-output" >&2
+  echo "build it with scripts/musicbrainz_workshop_setup.sh" >&2
   exit 1
 fi
 

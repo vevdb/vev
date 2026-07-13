@@ -14,6 +14,54 @@ Durable stores are opened with Vev paths such as `app.vev`. Vev currently uses
 SQLite internally for durability, but application code does not create SQLite
 tables or issue SQL.
 
+## MusicBrainz Workshop
+
+The repository includes parallel Clojure and Kvist ports of the upstream
+Datomic MusicBrainz tutorial material. With the exported sample chunks present,
+create the persistent store and validate both hosts with one command:
+
+```sh
+scripts/musicbrainz_workshop_setup.sh --validate
+```
+
+The individual host commands are:
+
+```sh
+scripts/musicbrainz_workshop_clojure.sh
+scripts/musicbrainz_workshop_kvist.sh
+```
+
+See `docs/musicbrainz.md` for sample export conversion, optional Datomic
+comparison, path overrides, and runtime requirements.
+
+## Application Example
+
+The contact book is a small non-workshop application implemented in Python,
+Clojure, and Kvist. The Clojure and Kvist versions both:
+
+- use an in-memory connection for the test path
+- transact schema and data
+- query and pull through an immutable DB value
+- prove that `db-with` does not mutate the original DB
+- use a durable Vev store in normal operation
+- close, reopen, transact, and reopen again to verify persistence
+
+Run the Clojure and Kvist applications together:
+
+```sh
+scripts/contact_book.sh
+```
+
+To verify the Clojure application as an external package consumer rather than
+through repository source paths:
+
+```sh
+scripts/contact_book_package_clojure.sh
+```
+
+That command creates a temporary project whose only Vev dependency is
+`dev.vevdb/vev-clj`, backed by the locally built Maven artifacts.
+
 ## CLI
 
 The CLI is the shortest way to try durable Vev from a shell:
@@ -121,6 +169,50 @@ DB snapshots are passable immutable values. The JVM wrapper has cleanup
 fallbacks, so examples use normal Clojure binding style. Long-running services
 or tight loops that create many connections, prepared queries, or DB snapshots
 can still call `.close` explicitly.
+
+## Kvist
+
+Kvist applications import the high-level `vev_app` package and use the same
+connection -> immutable DB value -> query shape. Queries, transactions, and
+pull patterns are Kvist data literals rather than EDN strings:
+
+```clojure
+(package main)
+
+(import d "../src/vev_app")
+
+(defn main []
+  (let [conn (d.create-conn)]
+    (defer (d.close-conn! conn))
+    (let [report
+            (d.transact
+              conn
+              [{:db/id 1 :artist/name "John Lennon"}
+               {:db/id 2 :artist/name "Yoko Ono"}])]
+      (defer (d.close-report report)))
+    (let [[snapshot ok error] (d.db conn)]
+      (defer (d.close-db! snapshot))
+      (when (not ok)
+        (panic error))
+      (let [result
+              (d.q
+                [:find ?name
+                 :where [?e :artist/name ?name]]
+                snapshot)]
+        (defer (d.close-result result))))))
+```
+
+Durability changes only connection creation:
+
+```clojure
+(let [[conn ok error] (d.connect "app.vev")]
+  ...)
+```
+
+The database handle is an immutable snapshot and can be passed through normal
+Kvist code. Native handles own resources, so the owner closes each connection,
+DB snapshot, result, report, and pulled value exactly once. The complete
+in-memory and durable application is `examples/kvist/contact_book.kvist`.
 
 ## Python
 

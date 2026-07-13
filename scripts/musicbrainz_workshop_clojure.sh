@@ -6,11 +6,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JAVA_OUT="$ROOT/build/examples/java"
-STORE="$ROOT/build/musicbrainz/vev-mbrainz-tutorial.sqlite"
+STORE="${VEV_MUSICBRAINZ_STORE:-$ROOT/build/musicbrainz/vev-mbrainz-tutorial.sqlite}"
 
 if [[ ! -f "$STORE" ]]; then
   echo "missing persistent MusicBrainz Vev store: $STORE" >&2
-  echo "build it with bench/musicbrainz_import_subset.kvist and --sqlite-output" >&2
+  echo "build it with scripts/musicbrainz_workshop_setup.sh" >&2
   exit 1
 fi
 

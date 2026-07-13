@@ -140,3 +140,25 @@
     (t.is constant-name.ok)
     (t.is (= (count constant-name.rows) 1))
     (t.is (has-text? constant-name "Ada"))))
+
+(t.deftest in-memory-reference-link-rule-feeds-multi-attr-projection
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        _ (vev.transact
+            (addr conn)
+            [[:db/add 1 :person/name "Ada"]
+             [:db/add 10 :edge/left (vev.value-entity 1)]
+             [:db/add 20 :edge/right (vev.value-entity 10)]
+             [:db/add 20 :item/name "linked"]
+             [:db/add 20 :item/rank 7]])
+        profiled (vev.q-text-profiled-with-rules
+                   conn.db
+                   "[:find ?name ?rank :in $ % :where [?left :person/name \"Ada\"] (linked ?left ?right) [?right :item/name ?name] [?right :item/rank ?rank]]"
+                   "[[(linked ?left ?right) [?middle :edge/left ?left] [?right :edge/right ?middle]]]"
+                   ([]vev.Query-Input []))]
+    (t.is profiled.result.ok profiled.result.error)
+    (t.is (= (count profiled.result.rows) 1))
+    (t.is (= profiled.result.rows[0].values[0].text "linked"))
+    (t.is (= profiled.result.rows[0].values[1].int-value 7))
+    (t.is (= profiled.stats.rule-calls 1))
+    (vev.delete-profiled-result-set-owned-values profiled)))

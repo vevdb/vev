@@ -1,286 +1,140 @@
-# MusicBrainz / Day Of Datomic Workload
+# MusicBrainz Workshop
 
-MusicBrainz/Day-of-Datomic is the current real-workload validation suite for
-Vev. The initial correctness phase is complete enough to use as a regression
-gate while development moves back toward durable storage and host API work.
+The MusicBrainz workflow validates that Vev can follow real Datomic tutorial
+material from Clojure and Kvist against the same persistent store. Examples are
+ported from upstream rather than invented for Vev.
 
-The goal is not to invent a new benchmark. The goal is to make existing
-Datomic tutorial material work against Vev with minimal translation, then use
-the same workload to compare correctness and performance against local Datomic.
+## Upstream Sources
 
-## Current Starting Point
+The current workshop covers executable material from:
 
-Vev is ready to start this phase because:
+- `build/upstream/mbrainz-sample/examples/clj/datomic/samples/mbrainz.clj`
+- `build/upstream/mbrainz-sample/schema.edn`
+- `build/upstream/mbrainz-sample/resources/rules.edn`
+- `build/upstream/day-of-datomic-conj/src/music_brainz.clj`
+- `build/upstream/day-of-datomic/tutorial/query.clj`
+- `build/upstream/day-of-datomic/tutorial/pull.clj`
+- `build/upstream/day-of-datomic/tutorial/aggregates.clj`
+- `build/upstream/day-of-datomic/tutorial/decomposing_a_query.clj`
 
-- the DataScript-shaped in-memory semantic surface is broad
-- EDN text query, pull, rules, and transaction APIs exist for non-Kvist callers
-- host wrappers can call through the C ABI
-- SQLite-backed open/write/close/reopen/query works
-- durable transaction metadata is persisted and inspectable
-- the known durable write bottleneck is architectural and documented
+The data source is Datomic's 1968-1973 MusicBrainz sample backup. Vev's local
+export contains 763,274 transaction items split into a schema file and eight
+bounded value chunks.
 
-The project should not block MusicBrainz on the shared-index storage rewrite.
-The workload should instead tell us where that rewrite matters in practice.
+## Requirements
 
-Initial local discovery did not find a checked-in full mbrainz/MusicBrainz dump
-under `/Users/andreas/Projects` or the nearby home-directory project tree, so
-the first harness starts with a deterministic mbrainz-shaped mini fixture.
+Local source builds require:
 
-The 1968-1973 sample backup is now locally restorable with
-`scripts/musicbrainz_sample.sh`. It downloads and extracts the backup under the
-ignored `build/musicbrainz` directory, starts the local Datomic Pro install at
-`/Users/andreas/datomic/datomic-pro-1.0.7277`, and restores to:
+- `kvist`
+- Odin
+- a system SQLite runtime for durable Vev stores
+- Java 21 and Clojure CLI for the Clojure workshop
+
+Applications use Vev store paths and Vev APIs. They do not create SQLite
+schemas, issue SQL, or otherwise manage SQLite directly. See
+`docs/runtime-dependencies.md` for platform details.
+
+## Create Or Refresh The Store
+
+With an existing Vev-compatible MusicBrainz export under
+`build/musicbrainz`:
+
+```sh
+scripts/musicbrainz_workshop_setup.sh
+```
+
+This command builds the importer, replaces the tutorial store, imports every
+chunk, verifies close/reopen/query, and builds the native library needed by
+host clients. The resulting store is:
 
 ```text
-datomic:dev://localhost:4334/mbrainz-1968-1973
+build/musicbrainz/vev-mbrainz-tutorial.sqlite
 ```
 
-Local restore/smoke status:
+Use `--validate` to create the store and then run both host suites:
 
-- backup source: `https://s3.amazonaws.com/mbrainz/datomic-mbrainz-1968-1973-backup-2017-07-20.tar`
-- local backup URI: `file://$repo/build/musicbrainz/mbrainz-1968-1973`
-- restored Datomic basis t: `148253`
-- `scripts/musicbrainz_sample.sh smoke-datomic` successfully reads datoms and
-  artist names from the restored database
-
-Primary upstream references:
-
-- Datomic blog announcement:
-  `https://blog.datomic.com/2013/07/datomic-musicbrainz-sample-database.html`
-- sample project:
-  `https://github.com/Datomic/mbrainz-sample`
-- sample schema:
-  `https://github.com/Datomic/mbrainz-sample/blob/master/schema.edn`
-- sample query wiki:
-  `https://github.com/Datomic/mbrainz-sample/wiki/Queries`
-- current Amazing Day of Datomic workshop:
-  `https://github.com/Datomic/day-of-datomic-conj`
-- original Day of Datomic samples:
-  `https://github.com/Datomic/day-of-datomic`
-
-The 2013 blog references the original full backup
-`http://s3.amazonaws.com/mbrainz/datomic-mbrainz-backup-20130611.tar`, about
-2.8 GB, with a restore target like `datomic:free://localhost:4334/mbrainz`.
-The current sample repo README points at the smaller 1968-1973 subset backup:
-`https://s3.amazonaws.com/mbrainz/datomic-mbrainz-1968-1973-backup-2017-07-20.tar`.
-That subset should be the first real Datomic comparison target because it is
-large enough to be meaningful but much easier to restore and iterate on.
-
-## First Target
-
-Start with a deterministic Day-of-Datomic / mbrainz-shaped dataset slice.
-
-The first useful milestone is:
-
-1. Import schema and seed data into an in-memory Vev connection.
-2. Run a small set of tutorial queries against Vev.
-3. Run the same queries against local Datomic.
-4. Compare result sets before timing anything.
-5. Repeat the same import/query path through the SQLite-backed Vev connection.
-
-Correctness comes first. Performance comparisons become meaningful only after
-the query and result shapes match.
-
-Status: first mini-fixture harness exists in
-`src/vev_tests/musicbrainz_test.kvist`. It imports schema and seed data via EDN
-text, runs tutorial-shaped queries against an in-memory DB, and repeats the
-same assertions after SQLite-backed commit, close, reopen, and query. The mini
-fixture now uses real mbrainz-shaped attrs such as `:release/media`,
-`:medium/tracks`, `:track/artists`, and `:artist/startYear`, plus a small
-subset of the upstream `rules.edn` shape:
-
-- `track-release`
-- `track-info`
-- `short-track`
-
-Current covered query shapes include direct joins, reverse refs, predicates,
-aggregates, prepared EDN text input, collection binding, tuple binding,
-relation binding, scalar/tuple/collection find specs, rule-backed queries,
-duration function expressions, return maps, enum refs through `:db/ident`,
-`get-else`, statistics aggregates, and nested pull through
-release/media/tracks. It also covers wildcard pull, reverse-ref pull, pull
-`limit`, pull `default`, pull `:as` aliasing, map-form EDN queries,
-split/composed rules, input-parameter rule predicates, `not`/`not-join`,
-`or`/`or-join`, `get-some`, dynamic
-pull pattern inputs, `missing?`, lookup-ref inputs, dynamic attr inputs, top-n
-aggregates, and the Day-of-Datomic query-stats final John Lennon pre-1970
-tracks example. Restored `get-some` rows now match Datomic's attr-entity
-semantics by projecting the attr through `:db/ident`. The detailed coverage ledger is
-`docs/musicbrainz-query-matrix.md`.
-
-The restored Datomic comparison matrix now also covers release date
-projection, `get-else`, restored `get-some`, `:keys`/`:strs`/`:syms`
-return-map rows, collection/tuple/scalar find specs, function expressions,
-enum refs through `:db/ident`, grouped median/avg/sum aggregates with `:with`,
-direct wildcard pull `[*]`, direct reverse-ref pull through
-`:release/_artists`, pull `limit` over that reverse many-valued relationship,
-pull `default` over missing `:artist/gender`, pull `:as` aliasing, dynamic
-pull pattern input, Datomic-style tagged UUID literals, `missing?`, dynamic
-attr input, query-stats tutorial traversal, input-parameter rule predicates,
-and top-n aggregate rows against the real 1968-1973 sample.
-
-The restored sample forced one real Vev data-model addition: UUID values.
-MusicBrainz GID attrs such as `:artist/gid` and `:release/gid` use
-`:db.type/uuid`, so Vev now parses EDN UUID literals as a distinct primitive
-value kind instead of stringifying them during import.
-
-The restored sample also forced a real import-shape decision: Datomic entity
-ids are larger than Vev's current explicit entity-id range. The current
-MusicBrainz exporter remaps Datomic eids into a compact Vev id space while
-preserving all ref values through the same remap table. This is appropriate for
-sample/database import tooling; Vev-native databases still allocate their own
-ids.
-
-`scripts/export_mbrainz_subset.clj` and `scripts/musicbrainz_sample.sh` now
-export Vev-compatible EDN transaction files from the restored Datomic sample.
-The exporter can write either one transaction file or staged files:
-
-```bash
-scripts/musicbrainz_sample.sh export-subset build/musicbrainz/vev-mbrainz-subset.edn
-scripts/musicbrainz_sample.sh export-subset-split build/musicbrainz/vev-mbrainz-subset-5000 5000
+```sh
+scripts/musicbrainz_workshop_setup.sh --validate
 ```
 
-The full current subset export writes 763,274 transaction items, about 41 MB,
-from restored Datomic basis t `148253`. The staged export writes schema/ident
-facts separately from value facts so Vev can transact schema first and bulk
-values second.
+Paths can be overridden without editing tutorial code:
 
-`bench/musicbrainz_import_subset.kvist` is the current Vev import smoke. It can
-load either a single EDN tx file or staged schema/value files:
-
-```bash
-cd /Users/andreas/Projects/kvist
-./kvist build /Users/andreas/Projects/vev/bench/musicbrainz_import_subset.kvist \
-  --out /Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset
-
-/Users/andreas/Projects/vev/build/bench/musicbrainz_import_subset \
-  --schema /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-schema.edn \
-  --values /Users/andreas/Projects/vev/build/musicbrainz/vev-mbrainz-subset-5000-values.edn
+```sh
+VEV_MUSICBRAINZ_EXPORT_PREFIX=/path/to/export-prefix \
+VEV_MUSICBRAINZ_STORE=/path/to/musicbrainz.vev \
+  scripts/musicbrainz_workshop_setup.sh
 ```
 
-Current status:
+The Datomic backup is not itself a Vev transaction export. If the exported
+chunks are absent and a local Datomic Pro installation is available, explicitly
+run the source-conversion path:
 
-- 100-item compact-id single-file import passes.
-- 500-value staged import passes.
-- 5,000-value staged import passes and queries successfully.
-- 50k, 100k, 200k, 400k, and the current full chunked staged import run locally
-  and preserve the expected tutorial query results for the sampled slice.
-- EDN parse time is already small for these slices; transaction/index
-  publication dominates.
-
-The important finding is functional rather than cosmetic: MusicBrainz import is
-now correct for a real restored Datomic-derived slice. Full chunked import uses
-separate schema/value files and releases each parsed value chunk after applying
-it. A parsed-string lifetime bug was fixed by making DB log datoms own their
-attribute/value payloads; chunked imports no longer depend on input file buffers
-remaining alive. The remaining import work is reducing whole-array DB/index
-publication costs as database values grow.
-
-The mini fixture also exercises Vev query profiling for MusicBrainz-shaped
-joins. `src/vev_tests/musicbrainz_test.kvist` asserts that profiled EDN and
-prepared EDN queries return the expected rows and non-empty planner/profile
-statistics. `bench/musicbrainz_query_profile.kvist` is the small standalone
-runner for clause-order timings and profile counters:
-
-```bash
-cd /Users/andreas/Projects/kvist
-./kvist run /Users/andreas/Projects/vev/bench/musicbrainz_query_profile.kvist
+```sh
+DATOMIC_HOME=/path/to/datomic-pro \
+  scripts/musicbrainz_workshop_setup.sh --from-datomic
 ```
 
-The same runner now also accepts `--dataset real` plus staged schema/value
-paths. It imports the restored exported subset, runs the same clause-order,
-rule, aggregate, not/or, relation-input, pull, nested pull, and direct
-lookup-ref pull shapes, and prints row counts, portable result fingerprints,
-timing samples, step count, clause count, candidate count, maximum intermediate
-bindings, and output rows. `--print-rows true` prints sorted projected row keys
-for direct `diff` against Datomic.
+Datomic is only needed to read its backup format and produce the portable EDN
+transaction chunks. It is not required to open or use the resulting Vev store.
 
-Local Datomic comparison is available through:
+## Run The Workshops
 
-```bash
-scripts/musicbrainz_sample.sh query-matrix-datomic --samples 2 --warmups 1
+Clojure:
+
+```sh
+scripts/musicbrainz_workshop_clojure.sh
 ```
 
-The preferred correctness check is the combined verifier:
+Kvist:
 
-```bash
-scripts/compare_musicbrainz_query_matrix.sh --workload release-first
+```sh
+scripts/musicbrainz_workshop_kvist.sh
 ```
 
-It builds the Vev MusicBrainz profiler, imports the restored Vev export, runs
-the same selected workload against local Datomic, and fails if row counts or
-portable fingerprints differ. Use `--workload all` for the full current matrix.
+The Clojure examples use `vev.core` as `d` and follow the familiar query-first
+shape:
 
-The full current comparison matrix now passes against Datomic:
-
-```bash
-scripts/compare_musicbrainz_query_matrix.sh --workload all --samples 1 --warmups 0
+```clojure
+(d/q '[:find ?name :where [?e :artist/name ?name]] db)
 ```
 
-Current timings show Vev is fast on ordinary multi-hop clause/predicate joins
-after dependency-aware clause planning. The imported Vev subset returns the
-same projected rows as Datomic for the current tutorial-shaped matrix. Pure
-rule-expanded joins made from data clauses and rule calls now use a
-dependency-aware rule-body planner. Bounded `or`/`or-join` and
-`not`/`not-join` reuse the planned group-clause path, so the current real-data
-matrix no longer exposes a clear slow query-planner outlier.
+The Kvist examples use Vev's literal data DSL with the database after the query
+form:
 
-## Current Work Items
+```clojure
+(vev.q [:find ?name :where [?e :artist/name ?name]] db)
+```
 
-1. Build a Datomic-to-Vev export/import path for the restored 1968-1973 sample.
-   Status: done for the current chunked export/import path.
-2. Port the `day-of-datomic-conj/src/music_brainz.clj` query set into a Vev
-   fixture file, marking each form as passing, Vev-difference, or pending.
-   Status: current engine-relevant matrix passes; remaining snippets are host
-   presentation or optional follow-up.
-3. Expand the mini fixture only when it exposes a missing semantic shape; the
-   restored sample is now the main correctness/performance target.
-4. Add an importer that converts the Datomic dataset into Vev EDN transaction
-   text or prepared `Tx-Data` values.
-   Status: done for EDN transaction text export/import.
-5. Add a small query fixture file containing Datomic tutorial queries, expected
-   result normalization rules, and notes for any deliberate Vev differences.
-   Status: `docs/musicbrainz-query-matrix.md` plus the Vev/Datomic runners are
-   the current fixture.
-6. Add a Vev harness that can run:
-   - in-memory import and query
-   - SQLite import, close/reopen, and query
-   - optional Datomic comparison when the local Datomic process/database is
-     available
-   Status: in-memory real import/query and Datomic comparison exist for the
-   current query matrix. `scripts/compare_musicbrainz_query_matrix.sh` verifies
-   selected rows or the full matrix by comparing Vev and Datomic row counts and
-   fingerprints.
-7. Record comparisons as result equality plus relative timing ratios. Avoid
-   unsupported raw timing claims until the harness has stable warmup and repeat
-   behavior.
-   Status: current docs record single-sample local timings as development
-   signals; repeatable benchmarking can be tightened later.
+EDN strings remain available where the workshop intentionally exercises the
+cross-language parser surface.
 
-## Expected Pressure Points
+## Compare With Datomic
 
-This workload should exercise:
+Datomic comparison is optional and separate from ordinary Vev use. Prepare the
+local sample and run:
 
-- schema attrs and idents
-- refs and reverse refs
-- lookup refs
-- pull patterns
-- aggregates
-- multi-clause joins
-- rules if present in the tutorial material
-- host-facing EDN string APIs
-- large in-memory index construction
-- durable import and reopen behavior
+```sh
+scripts/musicbrainz_sample.sh prepare
+scripts/compare_musicbrainz_workshop.sh
+```
 
-If MusicBrainz exposes single-row durable write cost as the limiting factor,
-resume the shared immutable/chunked DB index storage work from `docs/storage.md`.
-If query time dominates instead, resume the physical operator/planner work from
-`docs/roadmap.md` and `docs/benchmarks.md`.
+For Vev-only row/fingerprint validation:
 
-## Non-Goals For This Phase
+```sh
+scripts/compare_musicbrainz_workshop.sh --skip-datomic
+```
 
-- full MusicBrainz production-scale ingestion before the small slice works
-- query translation to SQL
-- Datomic peer/client compatibility beyond tutorial-shaped API ergonomics
-- solving the entire durable storage architecture before measuring this
-  workload
+The comparison harness checks row counts and portable fingerprints across Vev
+Clojure, Vev Kvist, and local Datomic. It also supports focused workloads and
+measured runs; use `--help` for the current options.
+
+## Current Result
+
+- Full store refresh succeeds with 763,274 datoms.
+- The refreshed store closes, reopens, and answers the import smoke queries.
+- The complete Clojure workshop validation passes.
+- The parallel Kvist workshop validation reports `summary ok=true`.
+- Covered Datomic comparisons match row counts and portable fingerprints.
+- Covered persistent Vev performance is accepted for the current usability
+  gate. Further tuning starts from a measured application blocker, not a
+  workshop-specific special case.

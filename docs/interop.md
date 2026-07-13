@@ -84,6 +84,11 @@ creates that resource tree for the current platform, and
 - `vev-native-<platform>-<version>.jar`
 - `vev-clj-<version>.jar`
 
+`scripts/contact_book_package_clojure.sh` verifies the packaged Clojure path
+with a complete in-memory and durable application from a temporary project. It
+uses only `dev.vevdb/vev-clj`; no repository source classpath or explicit
+native-library path is present in the consumer project.
+
 It also writes a local Maven repository under `build/m2`, so the future
 published dependency shapes can already be tested from outside the repo:
 

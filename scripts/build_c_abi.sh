@@ -7,10 +7,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KVIST_BIN="${KVIST_BIN:-kvist}"
 
-GENERATED_DIR="$ROOT/build/generated/vev_abi"
 CLI_GENERATED_DIR="$ROOT/build/generated/vev_cli"
 LIB_DIR="$ROOT/build/lib"
-PKGCONFIG_DIR="$LIB_DIR/pkgconfig"
 EXAMPLE_DIR="$ROOT/build/examples/c"
 RUST_EXAMPLE_DIR="$ROOT/build/examples/rust"
 JAVA_EXAMPLE_DIR="$ROOT/build/examples/java"
@@ -27,30 +25,9 @@ esac
 
 LIB_PATH="$LIB_DIR/$LIB_NAME"
 
-mkdir -p "$GENERATED_DIR" "$CLI_GENERATED_DIR" "$LIB_DIR" "$PKGCONFIG_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR" "$ODIN_EXAMPLE_DIR"
+mkdir -p "$CLI_GENERATED_DIR" "$LIB_DIR" "$EXAMPLE_DIR" "$RUST_EXAMPLE_DIR" "$JAVA_EXAMPLE_DIR" "$GO_EXAMPLE_DIR" "$NODE_EXAMPLE_DIR" "$ODIN_EXAMPLE_DIR"
 
-if [[ -n "${KVIST_REPO_DIR:-}" ]]; then
-  (
-    cd "$KVIST_REPO_DIR"
-    "$KVIST_BIN" compile "$ROOT/src/vev_abi/vev_abi.kvist" -o "$GENERATED_DIR/vev_abi.odin"
-  )
-else
-  "$KVIST_BIN" compile "$ROOT/src/vev_abi/vev_abi.kvist" -o "$GENERATED_DIR/vev_abi.odin"
-fi
-odin build "$GENERATED_DIR" -build-mode:dll -out:"$LIB_PATH"
-
-cat > "$PKGCONFIG_DIR/vev.pc" <<EOF
-prefix=$ROOT/build
-exec_prefix=\${prefix}
-libdir=\${prefix}/lib
-includedir=$ROOT/include
-
-Name: Vev
-Description: Embedded native Datalog database
-Version: 0.1.0
-Libs: -L\${libdir} -lvev
-Cflags: -I\${includedir}
-EOF
+"$ROOT/scripts/build_native_library.sh" >/dev/null
 
 clang \
   -I"$ROOT/include" \

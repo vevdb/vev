@@ -1,0 +1,127 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package vev-tests)
+
+(import fmt "core:fmt")
+(import os "core:os")
+(import t "kvist:test")
+(import vev "../vev")
+
+(defn remove-sqlite-files [path: string]
+  (os.remove path)
+  (let [wal-path (fmt.tprintf "%s-wal" path) :defer
+        shm-path (fmt.tprintf "%s-shm" path) :defer]
+    (os.remove wal-path)
+    (os.remove shm-path))
+  (return))
+
+(t.deftest sqlite-index-run-manifest-stores-entity-attr-prefix-ranges
+  (defer (free_all context.allocator))
+  (remove-sqlite-files "tmp.vev.storage-manifest-prefix.sqlite")
+  (let [path "tmp.vev.storage-manifest-prefix.sqlite"
+        [store opened-ok opened-error] (vev.open-store path)
+        seed (vev.transact-store-report-tx-data
+               (addr store)
+               ([]vev.Tx-Data [(vev.add 1 ":item/name" (vev.value-string "one"))
+                                (vev.add 1 ":item/rank" (vev.value-int 10))
+                                (vev.add 2 ":item/name" (vev.value-string "two"))
+                                (vev.add 2 ":item/friend" (vev.value-entity 1))
+                                (vev.add 3 ":item/friend" (vev.value-entity 1))]))
+        [eavt-manifest eavt-manifest-ok eavt-manifest-error] (vev.sqlite-create-index-run-manifest-for-test path ":eavt")
+        [vaet-manifest vaet-manifest-ok vaet-manifest-error] (vev.sqlite-create-index-run-manifest-for-test path ":vaet")
+        [eavt-first eavt-last eavt-found eavt-ok eavt-error] (vev.sqlite-index-run-manifest-entity-attr-range-for-test (addr store) eavt-manifest 0 ":eavt" 1 ":item/name")
+        [eavt-missing-first eavt-missing-last eavt-missing-found eavt-missing-ok eavt-missing-error] (vev.sqlite-index-run-manifest-entity-attr-range-for-test (addr store) eavt-manifest 0 ":eavt" 42 ":item/name")
+        [vaet-first vaet-last vaet-found vaet-ok vaet-error] (vev.sqlite-index-run-manifest-entity-attr-range-for-test (addr store) vaet-manifest 0 ":vaet" 1 ":item/friend")]
+    (discard eavt-missing-first)
+    (discard eavt-missing-last)
+    (defer (remove-sqlite-files path))
+    (t.is opened-ok opened-error)
+    (t.is seed.ok seed.error)
+    (t.is eavt-manifest-ok eavt-manifest-error)
+    (t.is vaet-manifest-ok vaet-manifest-error)
+    (t.is eavt-ok eavt-error)
+    (t.is eavt-found)
+    (t.is (>= eavt-first 0))
+    (t.is (>= eavt-last eavt-first))
+    (t.is eavt-missing-ok eavt-missing-error)
+    (t.is (not eavt-missing-found))
+    (t.is vaet-ok vaet-error)
+    (t.is vaet-found)
+    (t.is (>= vaet-first 0))
+    (t.is (>= vaet-last vaet-first))
+    (vev.delete-store-tx-report seed)
+    (vev.close-store store)))
+
+(t.deftest sqlite-bound-entity-multi-attr-query-uses-one-covering-scan
+  (defer (free_all context.allocator))
+  (remove-sqlite-files "tmp.vev.storage-multi-attr-scan.sqlite")
+  (let [path "tmp.vev.storage-multi-attr-scan.sqlite"
+        [store opened-ok opened-error] (vev.open-store path)
+        seed (vev.transact-store-report-tx-data
+               (addr store)
+               ([]vev.Tx-Data [(vev.add 1 ":item/name" (vev.value-string "one"))
+                                (vev.add 2 ":item/name" (vev.value-string "two"))
+                                (vev.add 2 ":item/rank" (vev.value-int 20))
+                                (vev.add 2 ":item/friend" (vev.value-entity 1))
+                                (vev.add 3 ":item/friend" (vev.value-entity 1))]))
+        [db db-ok db-error] (vev.store-db (addr store))]
+    (defer (remove-sqlite-files path))
+    (t.is opened-ok opened-error)
+    (t.is seed.ok seed.error)
+    (t.is db-ok db-error)
+    (let [profiled (vev.q-profiled-store-db-text (addr db) "[:find ?name ?rank :where [?e :item/friend 1] [?e :item/name ?name] [?e :item/rank ?rank]]")]
+      (t.is profiled.result.ok profiled.result.error)
+      (t.is (= (count profiled.result.rows) 1))
+      (t.is (= profiled.result.rows[0].values[0].kind .String))
+      (t.is (= profiled.result.rows[0].values[0].text "two"))
+      (t.is (= profiled.result.rows[0].values[1].kind .Int))
+      (t.is (= profiled.result.rows[0].values[1].int-value 20))
+      (t.is (= profiled.stats.clauses 3))
+      (t.is (= profiled.stats.source-index-scans 2))
+      (t.is (= profiled.stats.source-operators 2))
+      (vev.delete-profiled-result-set-owned-values profiled))
+    (vev.close-store-db! (addr db))
+    (vev.delete-store-tx-report seed)
+    (vev.close-store store)))
+
+(t.deftest sqlite-reference-link-rule-feeds-multi-attr-projection
+  (defer (free_all context.allocator))
+  (remove-sqlite-files "tmp.vev.storage-reference-link-projection.sqlite")
+  (let [path "tmp.vev.storage-reference-link-projection.sqlite"
+        [store opened-ok opened-error] (vev.open-store path)
+        seed (vev.transact-store-report-tx-data
+               (addr store)
+               ([]vev.Tx-Data [(vev.add 1 ":person/name" (vev.value-string "Ada"))
+                                (vev.add 10 ":edge/left" (vev.value-entity 1))
+                                (vev.add 20 ":edge/right" (vev.value-entity 10))
+                                (vev.add 20 ":item/name" (vev.value-string "linked"))
+                                (vev.add 20 ":item/rank" (vev.value-int 7))]))
+        [db db-ok db-error] (vev.store-db (addr store))
+        [source source-ok source-error] (vev.store-db-read-source (addr db))
+        prepared (vev.prepare-query-text "[:find ?name ?rank :in $ % :where [?left :person/name \"Ada\"] (linked ?left ?right) [?right :item/name ?name] [?right :item/rank ?rank]]")
+        prepared-rules (vev.parse-rules-text "[[(linked ?left ?right) [?middle :edge/left ?left] [?right :edge/right ?middle]]]")]
+    (defer (remove-sqlite-files path))
+    (t.is opened-ok opened-error)
+    (t.is seed.ok seed.error)
+    (t.is db-ok db-error)
+    (t.is source-ok source-error)
+    (t.is prepared.ok prepared.error)
+    (t.is prepared-rules.ok prepared-rules.error)
+    (let [profiled (vev.q-prepared-db-read-source-profiled-with-rules source prepared prepared-rules ([]vev.Query-Input []))]
+      (t.is profiled.result.ok profiled.result.error)
+      (t.is (= (count profiled.result.rows) 1))
+      (t.is (= profiled.result.rows[0].values[0].kind .String))
+      (t.is (= profiled.result.rows[0].values[0].text "linked"))
+      (t.is (= profiled.result.rows[0].values[1].kind .Int))
+      (t.is (= profiled.result.rows[0].values[1].int-value 7))
+      (t.is (= profiled.stats.clauses 5))
+      (t.is (= profiled.stats.source-index-scans 4))
+      (t.is (= profiled.stats.source-operators 2))
+      (t.is (= profiled.stats.rule-calls 1))
+      (vev.delete-profiled-result-set-owned-values profiled))
+    (vev.delete-prepared-query-shallow prepared)
+    (vev.delete-prepared-rules-shallow prepared-rules)
+    (vev.close-store-db! (addr db))
+    (vev.delete-store-tx-report seed)
+    (vev.close-store store)))

@@ -1,0 +1,178 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package main)
+
+(import fmt "core:fmt")
+(import os "core:os")
+(import d "../../src/vev_app")
+
+(def default-store "/tmp/vev-contact-book-kvist.vev")
+
+(defn remove-store! [path: string]
+  (os.remove path)
+  (os.remove (fmt.tprintf "%s-wal" path))
+  (os.remove (fmt.tprintf "%s-shm" path)))
+
+(defn fail! [message: string]
+  (fmt.eprintln message)
+  (os.exit 1))
+
+(defn require-report! [report: d.Tx-Report]
+  (when (not (d.report-ok? report))
+    (let [error (d.report-error report)]
+      (d.close-report report)
+      (fail! error)))
+  (d.close-report report))
+
+(defn seed! [conn: d.Conn]
+  (require-report!
+    (d.transact
+      conn
+      [[:db/add 10 :db/ident :contact/email]
+       [:db/add 10 :db/unique :db.unique/identity]
+       [:db/add 11 :db/ident :contact/knows]
+       [:db/add 11 :db/valueType :db.type/ref]]))
+  (require-report!
+    (d.transact
+      conn
+      [{:db/id 1
+        :contact/name "Ada Lovelace"
+        :contact/email "ada@example.com"
+        :contact/company "Analytical Engines"}
+       {:db/id 2
+        :contact/name "Grace Hopper"
+        :contact/email "grace@example.com"
+        :contact/company "Compilers"}
+       [:db/add 1 :contact/knows 2]])))
+
+(defn contact-names [snapshot: d.DB] -> d.Result
+  (d.q
+    [:find ?name
+     :where [?e :contact/name ?name]]
+    snapshot))
+
+(defn assert-contact-names! [snapshot: d.DB, expected-count: int, require-katherine: bool]
+  (let [result (contact-names snapshot)
+        ok (and (d.result-ok? result)
+                (= (d.result-count result) expected-count)
+                (d.result-has-string? result 0 "Ada Lovelace")
+                (d.result-has-string? result 0 "Grace Hopper")
+                (= (d.result-has-string? result 0 "Katherine Johnson") require-katherine))]
+    (when (not ok)
+      (let [error (d.result-error result)]
+        (d.close-result result)
+        (fail! (fmt.tprintf "unexpected contact names: %s" error))))
+    (d.close-result result)))
+
+(defn assert-base-contacts! [snapshot: d.DB]
+  (assert-contact-names! snapshot 2 false)
+  (let [lookup (d.q
+                 [:find ?name
+                  :in $ ?email
+                  :where [?e :contact/email ?email]
+                         [?e :contact/name ?name]]
+                 snapshot
+                 "ada@example.com")
+        [name name-ok] (d.result-string-at lookup 0 0)]
+    (when (not (and (d.result-ok? lookup)
+                    (= (d.result-count lookup) 1)
+                    name-ok
+                    (= name "Ada Lovelace")))
+      (d.close-result lookup)
+      (fail! "email lookup returned the wrong contact"))
+    (d.close-result lookup))
+  (let [profile-result (d.pull
+                         snapshot
+                         [:contact/name :contact/email {:contact/knows [:contact/name]}]
+                         1)
+        profile (d.pull-value profile-result)
+        [name name-ok] (d.value-map-get profile ":contact/name")
+        [name-text name-string?] (d.value-string name)
+        [knows knows-ok] (d.value-map-get profile ":contact/knows")
+        [friend-name friend-name-ok] (d.value-map-get knows ":contact/name")
+        [friend-text friend-string?] (d.value-string friend-name)
+        valid (and profile-result.ok
+                   name-ok name-string? (= name-text "Ada Lovelace")
+                   knows-ok friend-name-ok friend-string?
+                   (= friend-text "Grace Hopper"))]
+    (when (not valid)
+      (d.close-value friend-name)
+      (d.close-value knows)
+      (d.close-value name)
+      (d.close-value profile)
+      (fail! (fmt.tprintf "pull returned the wrong contact: %s" profile-result.error)))
+    (d.close-value friend-name)
+    (d.close-value knows)
+    (d.close-value name)
+    (d.close-value profile)))
+
+(defn snapshot! [conn: d.Conn] -> d.DB
+  (let [[snapshot ok error] (d.db conn)]
+    (when (not ok)
+      (fail! error))
+    snapshot))
+
+(defn run-in-memory! []
+  (let [conn (d.create-conn)]
+    (defer (d.close-conn! conn))
+    (seed! conn)
+    (let [snapshot (snapshot! conn)]
+      (defer (d.close-db! snapshot))
+      (assert-base-contacts! snapshot)
+      (let [next-db
+              (d.db-with
+                snapshot
+                [{:db/id 3
+                  :contact/name "Katherine Johnson"
+                  :contact/email "katherine@example.com"
+                  :contact/company "NASA"}])]
+        (defer (d.close-db! next-db))
+        (assert-contact-names! next-db 3 true)
+        (assert-contact-names! snapshot 2 false)))))
+
+(defn connect! [path: string] -> d.Conn
+  (let [[conn ok error] (d.connect path)]
+    (when (not ok)
+      (fail! error))
+    conn))
+
+(defn transact-katherine! [conn: d.Conn]
+  (require-report!
+    (d.transact
+      conn
+      [{:db/id 3
+        :contact/name "Katherine Johnson"
+        :contact/email "katherine@example.com"
+        :contact/company "NASA"}])))
+
+(defn run-durable! [path: string]
+  (remove-store! path)
+  (let [conn (connect! path)]
+    (seed! conn)
+    (let [snapshot (snapshot! conn)]
+      (assert-base-contacts! snapshot)
+      (d.close-db! snapshot))
+    (d.close-conn! conn))
+  (let [conn (connect! path)
+        snapshot (snapshot! conn)]
+    (assert-contact-names! snapshot 2 false)
+    (d.close-db! snapshot)
+    (transact-katherine! conn)
+    (let [updated (snapshot! conn)]
+      (assert-contact-names! updated 3 true)
+      (d.close-db! updated))
+    (d.close-conn! conn))
+  (let [conn (connect! path)
+        snapshot (snapshot! conn)]
+    (assert-contact-names! snapshot 3 true)
+    (d.close-db! snapshot)
+    (d.close-conn! conn))
+  (remove-store! path))
+
+(defn main []
+  (defer (free_all context.allocator))
+  (let [path (if (> (count os.args) 1) os.args[1] default-store)]
+    (run-in-memory!)
+    (run-durable! path)
+    (fmt.println "contact-book-kvist: ok")))

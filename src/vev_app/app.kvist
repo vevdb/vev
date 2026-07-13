@@ -1,0 +1,217 @@
+// Copyright (c) Andreas Flakstad and Vev contributors
+// SPDX-License-Identifier: EPL-2.0
+
+(package vev-app)
+
+(import vev "../vev")
+
+(def Conn (distinct rawptr))
+(def DB (distinct rawptr))
+(def Tx-Report (distinct rawptr))
+(def Result (distinct rawptr))
+(def Value (distinct rawptr))
+
+(defstruct Pull-Result {
+  value: rawptr
+  ok: bool
+  error: string
+})
+
+(defn- conn-ptr [conn: Conn] -> ^vev.Store-Conn
+  (transmute ^vev.Store-Conn (rawptr conn)))
+
+(defn- db-ptr [snapshot: DB] -> ^vev.Store-DB
+  (transmute ^vev.Store-DB (rawptr snapshot)))
+
+(defn- report-ptr [report: Tx-Report] -> ^vev.Store-Tx-Report
+  (transmute ^vev.Store-Tx-Report (rawptr report)))
+
+(defn- result-ptr [result: Result] -> ^vev.Query-Result
+  (transmute ^vev.Query-Result (rawptr result)))
+
+(defn- value-ptr [value: Value] -> ^vev.Value
+  (transmute ^vev.Value (rawptr value)))
+
+(defn- conn-handle [conn: vev.Store-Conn] -> Conn
+  (let [ptr (alloc vev.Store-Conn)]
+    (set! ptr^ conn)
+    (Conn (rawptr ptr))))
+
+(defn- db-handle [snapshot: vev.Store-DB] -> DB
+  (let [ptr (alloc vev.Store-DB)]
+    (set! ptr^ snapshot)
+    (DB (rawptr ptr))))
+
+(defn- report-handle [report: vev.Store-Tx-Report] -> Tx-Report
+  (let [ptr (alloc vev.Store-Tx-Report)]
+    (set! ptr^ report)
+    (Tx-Report (rawptr ptr))))
+
+(defn- result-handle [result: vev.Query-Result] -> Result
+  (let [ptr (alloc vev.Query-Result)]
+    (set! ptr^ result)
+    (Result (rawptr ptr))))
+
+(defn- value-handle [value: vev.Value] -> Value
+  (let [ptr (alloc vev.Value)]
+    (set! ptr^ value)
+    (Value (rawptr ptr))))
+
+(defn create-conn [] -> Conn
+  (conn-handle (vev.create-shared-store 128)))
+
+(defn connect [path: string] -> [conn: Conn, ok: bool, error: string]
+  (let [[store store-ok store-error] (vev.open-store path)]
+    (if store-ok
+      (return (conn-handle store) true "")
+      (do
+        (vev.close-store store)
+        (return (Conn nil) false store-error)))))
+
+(defn close-conn! [conn: Conn]
+  (when (= (rawptr conn) nil)
+    (return))
+  (let [ptr (conn-ptr conn)]
+    (vev.close-store ptr^)
+    (free (rawptr conn))))
+
+(defn db [conn: Conn] -> [snapshot: DB, ok: bool, error: string]
+  (let [[store-db store-ok store-error] (vev.store-db (conn-ptr conn))]
+    (if store-ok
+      (return (db-handle store-db) true "")
+      (do
+        (vev.close-store-db! (addr store-db))
+        (return (DB nil) false store-error)))))
+
+(defn close-db! [snapshot: DB]
+  (when (= (rawptr snapshot) nil)
+    (return))
+  (vev.close-store-db! (db-ptr snapshot))
+  (free (rawptr snapshot)))
+
+(defn report-ok? [report: Tx-Report] -> bool
+  (when (= (rawptr report) nil)
+    (return false))
+  (let [ptr (report-ptr report)]
+    ptr^.ok))
+
+(defn report-error [report: Tx-Report] -> string
+  (when (= (rawptr report) nil)
+    (return "null transaction report"))
+  (let [ptr (report-ptr report)]
+    ptr^.error))
+
+(defn close-report [report: Tx-Report]
+  (when (= (rawptr report) nil)
+    (return))
+  (let [ptr (report-ptr report)]
+    (vev.delete-store-tx-report ptr^)
+    (free (rawptr report))))
+
+(defmacro transact [conn tx-form]
+  (quasiquote
+    (report-handle
+      (vev.transact-store
+        (conn-ptr (unquote conn))
+        (unquote tx-form)))))
+
+(defn result-ok? [result: Result] -> bool
+  (when (= (rawptr result) nil)
+    (return false))
+  (let [ptr (result-ptr result)]
+    ptr^.result.ok))
+
+(defn result-error [result: Result] -> string
+  (when (= (rawptr result) nil)
+    (return "null query result"))
+  (let [ptr (result-ptr result)]
+    ptr^.result.error))
+
+(defn result-count [result: Result] -> int
+  (when (= (rawptr result) nil)
+    (return 0))
+  (let [ptr (result-ptr result)]
+    (count ptr^.result.rows)))
+
+(defn result-string-at [result: Result, row: int, column: int] -> [text: string, ok: bool]
+  (when (= (rawptr result) nil)
+    (return "" false))
+  (let [ptr (result-ptr result)
+        rows ptr^.result.rows]
+    (when (or (< row 0)
+              (>= row (count rows))
+              (< column 0)
+              (>= column (count rows[row].values)))
+      (return "" false))
+    (let [cell rows[row].values[column]]
+      (if (= cell.kind .String)
+        (return cell.text true)
+        (return "" false)))))
+
+(defn result-has-string? [result: Result, column: int, expected: string] -> bool
+  (let [row 0]
+    (while (< row (result-count result))
+      (let [[value ok] (result-string-at result row column)]
+        (when (and ok (= value expected))
+          (return true)))
+      (mut! row += 1))
+    false))
+
+(defn close-result [result: Result]
+  (when (= (rawptr result) nil)
+    (return))
+  (let [ptr (result-ptr result)]
+    (vev.delete-query-result ptr^)
+    (free (rawptr result))))
+
+(defmacro q [query snapshot & inputs]
+  (quasiquote
+    (result-handle
+      (vev.q-result-store-db
+        (unquote query)
+        (db-ptr (unquote snapshot))
+        (splice inputs)))))
+
+(defn close-value [value: Value]
+  (when (= (rawptr value) nil)
+    (return))
+  (let [ptr (value-ptr value)]
+    (vev.delete-owned-value ptr^)
+    (free (rawptr value))))
+
+(defn pull-value [result: Pull-Result] -> Value
+  (Value result.value))
+
+(defn value-map-get [value: Value, key: string] -> [found: Value, ok: bool]
+  (when (= (rawptr value) nil)
+    (return (Value nil) false))
+  (let [ptr (value-ptr value)
+        [item item-ok] (vev.map-get-value ptr^ (vev.value-keyword key))]
+    (if item-ok
+      (return (value-handle (vev.value-owned item)) true)
+      (return (Value nil) false))))
+
+(defn value-string [value: Value] -> [text: string, ok: bool]
+  (when (= (rawptr value) nil)
+    (return "" false))
+  (let [ptr (value-ptr value)
+        raw-value ptr^]
+    (if (= raw-value.kind .String)
+      (return raw-value.text true)
+      (return "" false))))
+
+(defmacro pull [snapshot pattern entity]
+  (quasiquote
+    (let [[value ok error]
+            (vev.pull-store-db
+              (db-ptr (unquote snapshot))
+              (unquote pattern)
+              (unquote entity))]
+      (Pull-Result {value: (rawptr (value-handle value)) ok: ok error: error}))))
+
+(defmacro db-with [snapshot tx-form]
+  (quasiquote
+    (db-handle
+      (vev.db-with-store-db
+        (db-ptr (unquote snapshot))
+        (unquote tx-form)))))
