@@ -5,11 +5,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/version.sh"
+VERSION="$(vev_version "$ROOT")"
 KVIST_BIN="${KVIST_BIN:-kvist}"
 GENERATED_DIR="$ROOT/build/generated/vev_abi"
 LIB_DIR="$ROOT/build/lib"
 PKGCONFIG_DIR="$LIB_DIR/pkgconfig"
 IF_NEEDED="false"
+KVIST_PATH="$(command -v "$KVIST_BIN" 2>/dev/null || true)"
 
 if [[ "${1:-}" == "--if-needed" ]]; then
   IF_NEEDED="true"
@@ -31,10 +34,21 @@ esac
 LIB_PATH="$LIB_DIR/$LIB_NAME"
 mkdir -p "$GENERATED_DIR" "$LIB_DIR" "$PKGCONFIG_DIR"
 
-if [[ "$IF_NEEDED" == "true" && -f "$LIB_PATH" ]] &&
-   ! find "$ROOT/src/vev" "$ROOT/src/vev_abi" -type f -newer "$LIB_PATH" -print -quit | grep -q .; then
-  echo "$LIB_PATH"
-  exit 0
+if [[ "$IF_NEEDED" == "true" && -f "$LIB_PATH" ]]; then
+  SOURCES_CURRENT="true"
+  if find "$ROOT/src/vev" "$ROOT/src/vev_abi" -type f -newer "$LIB_PATH" -print -quit | grep -q .; then
+    SOURCES_CURRENT="false"
+  fi
+  if [[ "$ROOT/VERSION" -nt "$LIB_PATH" ]]; then
+    SOURCES_CURRENT="false"
+  fi
+  if [[ -n "$KVIST_PATH" && "$KVIST_PATH" -nt "$LIB_PATH" ]]; then
+    SOURCES_CURRENT="false"
+  fi
+  if [[ "$SOURCES_CURRENT" == "true" ]]; then
+    echo "$LIB_PATH"
+    exit 0
+  fi
 fi
 
 if [[ -n "${KVIST_REPO_DIR:-}" ]]; then
@@ -56,7 +70,7 @@ includedir=$ROOT/include
 
 Name: Vev
 Description: Embedded native Datalog database
-Version: 0.1.0
+Version: $VERSION
 Libs: -L\${libdir} -lvev
 Cflags: -I\${includedir}
 EOF

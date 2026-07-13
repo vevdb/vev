@@ -5,7 +5,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VEV_VERSION:-0.1.0-SNAPSHOT}"
+source "$ROOT/scripts/version.sh"
+VERSION="$(vev_version "$ROOT")"
+ARCHIVE_DATE="$(git -C "$ROOT" show -s --format=%cI HEAD)"
 OUT_DIR="$ROOT/build/jvm"
 M2_DIR="$ROOT/build/m2"
 JAVA_CLASSES="$OUT_DIR/classes/java"
@@ -101,6 +103,7 @@ javac \
   "$ROOT/clients/java/src/main/java/dev/vevdb/vev/Vev.java"
 
 jar --create \
+  --date="$ARCHIVE_DATE" \
   --file "$OUT_DIR/vev-java-$VERSION.jar" \
   -C "$JAVA_CLASSES" .
 
@@ -109,6 +112,7 @@ write_pom "$OUT_DIR/vev-java-$VERSION.pom" "vev-java" "$(java_dependency_block)"
 VEV_JVM_NATIVE_DIR="$NATIVE_CLASSES" "$ROOT/scripts/stage_jvm_native.sh" >/dev/null
 
 jar --create \
+  --date="$ARCHIVE_DATE" \
   --file "$OUT_DIR/$NATIVE_ARTIFACT-$VERSION.jar" \
   -C "$NATIVE_CLASSES" .
 
@@ -117,6 +121,7 @@ write_pom "$OUT_DIR/$NATIVE_ARTIFACT-$VERSION.pom" "$NATIVE_ARTIFACT"
 cp -R "$ROOT/clients/clojure/src/." "$CLOJURE_CLASSES/"
 
 jar --create \
+  --date="$ARCHIVE_DATE" \
   --file "$OUT_DIR/vev-clj-$VERSION.jar" \
   -C "$CLOJURE_CLASSES" .
 

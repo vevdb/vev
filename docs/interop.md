@@ -94,7 +94,7 @@ published dependency shapes can already be tested from outside the repo:
 
 ```clojure
 {:mvn/local-repo "/path/to/vev/build/m2"
- :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}}
+ :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}}
 ```
 
 For Java, the matching local Maven dependency is `dev.vevdb:vev-java`. These

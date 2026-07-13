@@ -156,9 +156,9 @@ resources.
 `scripts/package_jvm.sh` builds local proof jars under `build/jvm`:
 
 ```text
-vev-java-0.1.0-SNAPSHOT.jar
-vev-native-<platform>-0.1.0-SNAPSHOT.jar
-vev-clj-0.1.0-SNAPSHOT.jar
+vev-java-0.1.0.jar
+vev-native-<platform>-0.1.0.jar
+vev-clj-0.1.0.jar
 ```
 
 It also writes a local Maven-style repository under `build/m2`. Those artifacts

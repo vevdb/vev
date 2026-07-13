@@ -2550,6 +2550,22 @@ abi_free_stmt :: proc(stmt: rawptr) {
         0)
     0))
 
+(defn- column-batch-append-string-copy! [handle: rawptr, column: int, text: string] -> bool
+  (let [owned (vev.string-owned text)]
+    (abi-generic-column-batch-append-string-owned handle column owned)))
+
+(defn- column-batch-append-mixed-string-copy! [handle: rawptr, column: int, kind: i32, text: string] -> bool
+  (let [owned (vev.string-owned text)]
+    (abi-generic-column-batch-append-mixed-string-owned handle column kind owned)))
+
+(defn- column-batch-append-value-copy! [handle: rawptr, column: int, value: vev.Value] -> bool
+  (let [owned (vev.value-owned value)]
+    (abi-generic-column-batch-append-value-owned handle column owned)))
+
+(defn- append-entity-string-int-triple-copy! [triples: ^vev.Entity-String-Int-Triples, entity: u64, text: string, value: i64]
+  (let [owned (vev.string-owned text)]
+    (vev.append-entity-string-int-triple! triples entity owned value)))
+
 (defn- column-batch-append-generic-value! [handle: rawptr, column: int, kind: int, value: vev.Value] -> bool
   (case kind
     1
@@ -2570,7 +2586,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
         false)
     2
       (if (column-batch-text-like-value? value)
-        (abi-generic-column-batch-append-string-owned handle column (vev.string-owned value.text))
+        (column-batch-append-string-copy! handle column value.text)
         false)
     4
       (case value.kind
@@ -2579,13 +2595,13 @@ abi_free_stmt :: proc(stmt: rawptr) {
         .Int (abi-generic-column-batch-append-mixed-int handle column value.int-value)
         .Float (abi-generic-column-batch-append-mixed-float handle column value.float-value)
         .Bool (abi-generic-column-batch-append-mixed-bool handle column value.bool-value)
-        .String (abi-generic-column-batch-append-mixed-string-owned handle column 2 (vev.string-owned value.text))
-        .Keyword (abi-generic-column-batch-append-mixed-string-owned handle column 6 (vev.string-owned value.text))
-        .Symbol (abi-generic-column-batch-append-mixed-string-owned handle column 7 (vev.string-owned value.text))
-        .Uuid (abi-generic-column-batch-append-mixed-string-owned handle column 10 (vev.string-owned value.text))
+        .String (column-batch-append-mixed-string-copy! handle column 2 value.text)
+        .Keyword (column-batch-append-mixed-string-copy! handle column 6 value.text)
+        .Symbol (column-batch-append-mixed-string-copy! handle column 7 value.text)
+        .Uuid (column-batch-append-mixed-string-copy! handle column 10 value.text)
         false)
     7
-      (abi-generic-column-batch-append-value-owned handle column (vev.value-owned value))
+      (column-batch-append-value-copy! handle column value)
     false))
 
 (defn- column-batch-append-generic-relation-cell! [handle: rawptr, out-column: int, kind: int, relation-column: vev.Relation-Column, row: int] -> bool
@@ -2608,10 +2624,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
         false)
     2
       (case relation-column.kind
-        .String (abi-generic-column-batch-append-string-owned handle out-column (vev.string-owned relation-column.texts[row]))
-        .Keyword (abi-generic-column-batch-append-string-owned handle out-column (vev.string-owned relation-column.texts[row]))
-        .Symbol (abi-generic-column-batch-append-string-owned handle out-column (vev.string-owned relation-column.texts[row]))
-        .Uuid (abi-generic-column-batch-append-string-owned handle out-column (vev.string-owned relation-column.texts[row]))
+        .String (column-batch-append-string-copy! handle out-column relation-column.texts[row])
+        .Keyword (column-batch-append-string-copy! handle out-column relation-column.texts[row])
+        .Symbol (column-batch-append-string-copy! handle out-column relation-column.texts[row])
+        .Uuid (column-batch-append-string-copy! handle out-column relation-column.texts[row])
         false)
     4
       (let [[value value-ok] (vev.typed-relation-column-value relation-column row)]
@@ -3074,7 +3090,7 @@ abi_free_stmt :: proc(stmt: rawptr) {
                          (= row.values[1].kind .Symbol)
                          (= row.values[1].kind .Uuid))
                      (= row.values[2].kind .Int))
-              (vev.append-entity-string-int-triple! (addr triples) entity (string-owned row.values[1].text) row.values[2].int-value)
+              (append-entity-string-int-triple-copy! (addr triples) entity row.values[1].text row.values[2].int-value)
               (set! triple-ok false))))
         (if triple-ok
           (return (Vev-Column-Batch (abi-alloc-column-batch 4 (abi-alloc-entity-string-int-triples-with-ownership triples true))))
@@ -3258,6 +3274,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
     (if (= err nil)
       out
       "")))
+
+(defn- alloc-sqlite-conn-copy [store: vev.SQLite-Conn, ok: bool, error: string] -> rawptr
+  (let [owned-error (string-owned error)]
+    (abi-alloc-sqlite-conn store ok owned-error)))
 
 (defn- value-owned [value: vev.Value] -> vev.Value
   (case value.kind
@@ -3897,11 +3917,11 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (odin "context = runtime.default_context()")
   (when (= uri nil)
     (let [store (vev.create-sqlite-conn "")]
-      (return (Vev-Connection (abi-alloc-sqlite-conn store false (string-owned "null Vev connection URI"))))))
+      (return (Vev-Connection (alloc-sqlite-conn-copy store false "null Vev connection URI")))))
   (let [uri-text (text-from-c uri)
         path (durable-path-from-uri uri-text)
         [store ok error] (vev.open-sqlite-conn path)
-        out (Vev-Connection (abi-alloc-sqlite-conn store ok (string-owned error)))]
+        out (Vev-Connection (alloc-sqlite-conn-copy store ok error))]
     (delete uri-text)
     (delete path)
     out))
@@ -4029,10 +4049,10 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (odin "context = runtime.default_context()")
   (when (= path nil)
     (let [store (vev.create-sqlite-conn "")]
-      (return (Vev-SQLite-Conn (abi-alloc-sqlite-conn store false (string-owned "null sqlite path"))))))
+      (return (Vev-SQLite-Conn (alloc-sqlite-conn-copy store false "null sqlite path")))))
   (let [path-text (text-from-c path)
         [store ok error] (vev.open-sqlite-conn path-text)
-        out (Vev-SQLite-Conn (abi-alloc-sqlite-conn store ok (string-owned error)))]
+        out (Vev-SQLite-Conn (alloc-sqlite-conn-copy store ok error))]
     (delete path-text)
     out))
 

@@ -86,9 +86,9 @@
   avet: [dynamic]int
   vaet: [dynamic]int
   schema-value-types: map[string]string
-  schema-cardinality-many: set[string]
-  schema-unique: set[string]
-  schema-ref: set[string]
+  schema-cardinality-many: (map string (struct {}))
+  schema-unique: (map string (struct {}))
+  schema-ref: (map string (struct {}))
 })
 
 (defstruct Serializable-DB {
@@ -1661,7 +1661,7 @@
     (arr.sort! current)
     current))
 
-(defn build-schema-caches [datoms: []Datom, current: []int] -> [value-types: map[string]string, cardinality-many: set[string], unique: set[string], refs: set[string]]
+(defn build-schema-caches [datoms: []Datom, current: []int] -> [value-types: map[string]string, cardinality-many: (map string (struct {})), unique: (map string (struct {})), refs: (map string (struct {}))]
   (let [out-value-types (mmap.empty string string)
         out-cardinality-many (set.empty string)
         out-unique (set.empty string)
@@ -1705,6 +1705,9 @@
 (defn build-db [datoms: [dynamic]Datom] -> DB
   (let [slice-datoms (slice datoms 0)
         eavt (build-index slice-datoms "eavt")
+        aevt (build-index slice-datoms "aevt")
+        avet (build-index slice-datoms "avet")
+        vaet (build-index slice-datoms "vaet")
         [eavt-entities eavt-entity-starts] (build-eavt-entities slice-datoms (slice eavt 0))
         current (build-current-index slice-datoms)
         [schema-value-types schema-cardinality-many schema-unique schema-ref] (build-schema-caches slice-datoms (slice current 0))]
@@ -1713,9 +1716,9 @@
          eavt: eavt
          eavt-entities: eavt-entities
          eavt-entity-starts: eavt-entity-starts
-         aevt: (build-index slice-datoms "aevt")
-         avet: (build-index slice-datoms "avet")
-         vaet: (build-index slice-datoms "vaet")
+         aevt: aevt
+         avet: avet
+         vaet: vaet
          schema-value-types: schema-value-types
          schema-cardinality-many: schema-cardinality-many
          schema-unique: schema-unique
@@ -1724,13 +1727,13 @@
 (defn clone-schema-value-types [schema: map[string]string] -> map[string]string
   (mmap.merge schema (mmap.empty string string)))
 
-(defn clone-schema-cardinality-many [schema: set[string]] -> set[string]
+(defn clone-schema-cardinality-many [schema: (map string (struct {}))] -> (map string (struct {}))
   (set.union schema (set.empty string)))
 
-(defn clone-schema-unique [schema: set[string]] -> set[string]
+(defn clone-schema-unique [schema: (map string (struct {}))] -> (map string (struct {}))
   (set.union schema (set.empty string)))
 
-(defn clone-schema-ref [schema: set[string]] -> set[string]
+(defn clone-schema-ref [schema: (map string (struct {}))] -> (map string (struct {}))
   (set.union schema (set.empty string)))
 
 (defn clone-db [db: DB] -> DB
@@ -1776,20 +1779,27 @@
 (defn build-db-append-only-merged-with-publish-plan [db: DB, datoms: [dynamic]Datom, plan: Tx-Publish-Plan] -> DB
   (let [slice-datoms (slice datoms 0)
         eavt (append-index-with-added slice-datoms (slice db.eavt 0) (slice plan.eavt 0) "eavt")
+        aevt (append-index-with-added slice-datoms (slice db.aevt 0) (slice plan.aevt 0) "aevt")
+        avet (append-index-with-added slice-datoms (slice db.avet 0) (slice plan.avet 0) "avet")
+        vaet (append-index-with-added slice-datoms (slice db.vaet 0) (slice plan.vaet 0) "vaet")
         [eavt-entities eavt-entity-starts] (build-eavt-entities slice-datoms (slice eavt 0))
-        current (build-current-index-appended-range (slice db.current 0) plan.start-index (+ plan.start-index plan.appended-count))]
+        current (build-current-index-appended-range (slice db.current 0) plan.start-index (+ plan.start-index plan.appended-count))
+        schema-value-types (clone-schema-value-types db.schema-value-types)
+        schema-cardinality-many (clone-schema-cardinality-many db.schema-cardinality-many)
+        schema-unique (clone-schema-unique db.schema-unique)
+        schema-ref (clone-schema-ref db.schema-ref)]
     (DB {datoms: datoms
          current: current
          eavt: eavt
          eavt-entities: eavt-entities
          eavt-entity-starts: eavt-entity-starts
-         aevt: (append-index-with-added slice-datoms (slice db.aevt 0) (slice plan.aevt 0) "aevt")
-         avet: (append-index-with-added slice-datoms (slice db.avet 0) (slice plan.avet 0) "avet")
-         vaet: (append-index-with-added slice-datoms (slice db.vaet 0) (slice plan.vaet 0) "vaet")
-         schema-value-types: (clone-schema-value-types db.schema-value-types)
-         schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)
-         schema-unique: (clone-schema-unique db.schema-unique)
-         schema-ref: (clone-schema-ref db.schema-ref)})))
+         aevt: aevt
+         avet: avet
+         vaet: vaet
+         schema-value-types: schema-value-types
+         schema-cardinality-many: schema-cardinality-many
+         schema-unique: schema-unique
+         schema-ref: schema-ref})))
 
 (defn build-db-append-only-new-entities [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
   (let [plan (tx-publish-plan-for-append (slice datoms start-index) start-index true)]
@@ -1799,24 +1809,31 @@
 (defn build-db-append-only-new-entities-with-publish-plan [db: DB, datoms: [dynamic]Datom, plan: Tx-Publish-Plan] -> DB
   (let [slice-datoms (slice datoms 0)
         eavt (concat-datom-indexes (slice db.eavt 0) (slice plan.eavt 0))
+        aevt (append-index-with-added slice-datoms (slice db.aevt 0) (slice plan.aevt 0) "aevt")
+        avet (append-index-with-added slice-datoms (slice db.avet 0) (slice plan.avet 0) "avet")
+        vaet (append-index-with-added slice-datoms (slice db.vaet 0) (slice plan.vaet 0) "vaet")
         [eavt-entities eavt-entity-starts] (append-eavt-entities-new-entities slice-datoms
                                                                               (slice eavt 0)
                                                                               (slice db.eavt-entities 0)
                                                                               (slice db.eavt-entity-starts 0)
                                                                               (count db.eavt))
-        current (build-current-index-appended-range (slice db.current 0) plan.start-index (+ plan.start-index plan.appended-count))]
+        current (build-current-index-appended-range (slice db.current 0) plan.start-index (+ plan.start-index plan.appended-count))
+        schema-value-types (clone-schema-value-types db.schema-value-types)
+        schema-cardinality-many (clone-schema-cardinality-many db.schema-cardinality-many)
+        schema-unique (clone-schema-unique db.schema-unique)
+        schema-ref (clone-schema-ref db.schema-ref)]
     (DB {datoms: datoms
          current: current
          eavt: eavt
          eavt-entities: eavt-entities
          eavt-entity-starts: eavt-entity-starts
-         aevt: (append-index-with-added slice-datoms (slice db.aevt 0) (slice plan.aevt 0) "aevt")
-         avet: (append-index-with-added slice-datoms (slice db.avet 0) (slice plan.avet 0) "avet")
-         vaet: (append-index-with-added slice-datoms (slice db.vaet 0) (slice plan.vaet 0) "vaet")
-         schema-value-types: (clone-schema-value-types db.schema-value-types)
-         schema-cardinality-many: (clone-schema-cardinality-many db.schema-cardinality-many)
-         schema-unique: (clone-schema-unique db.schema-unique)
-         schema-ref: (clone-schema-ref db.schema-ref)})))
+         aevt: aevt
+         avet: avet
+         vaet: vaet
+         schema-value-types: schema-value-types
+         schema-cardinality-many: schema-cardinality-many
+         schema-unique: schema-unique
+         schema-ref: schema-ref})))
 
 (defn build-db-append-only-with-publish-plan [db: DB, datoms: [dynamic]Datom, plan: Tx-Publish-Plan] -> DB
   (if plan.new-entities-after-existing
@@ -1838,7 +1855,8 @@
   (Datom {e: e a: a v: v tx: tx added: added}))
 
 (defn init-db [datoms: []Datom] -> DB
-  (build-db (clone-datom-slice datoms)))
+  (let [owned-datoms (clone-datom-slice datoms)]
+    (build-db owned-datoms)))
 
 (defn filter-db [db: DB, pred: (fn [db: DB, datom: Datom] -> bool)] -> DB
   // ponytail: materialize filtered DBs for now; replace with predicate-wrapped indexes only if benchmarks require it.

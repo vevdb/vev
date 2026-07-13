@@ -5,7 +5,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VEV_VERSION:-0.1.0-SNAPSHOT}"
+source "$ROOT/scripts/version.sh"
+VERSION="$(vev_version "$ROOT")"
 
 case "$(uname -s)" in
   Darwin) LIB_NAME="libvev.dylib" ;;

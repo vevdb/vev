@@ -5,7 +5,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VEV_VERSION:-0.1.0-SNAPSHOT}"
+source "$ROOT/scripts/version.sh"
+VERSION="$(vev_version "$ROOT")"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vev-contact-book-package.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 

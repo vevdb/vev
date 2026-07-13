@@ -5,6 +5,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/version.sh"
+VERSION="$(vev_version "$ROOT")"
 
 case "$(uname -s)" in
   Darwin) LIB_NAME="libvev.dylib" ;;
@@ -26,7 +28,7 @@ trap cleanup EXIT
 cat > "$TMP_DIR/Cargo.toml" <<EOF
 [package]
 name = "vev-rust-package-smoke"
-version = "0.1.0"
+version = "$VERSION"
 edition = "2021"
 publish = false
 

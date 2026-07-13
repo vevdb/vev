@@ -3,14 +3,32 @@
 
 (package vev)
 
+(defmacro- source-starts-with? [text prefix]
+  (if (> (count prefix) (count text))
+    false
+    (= (slice text 0 (count prefix)) prefix)))
+
+(defmacro- literal-nil? [form]
+  (= form nil))
+
+(defmacro- literal-int? [form]
+  (and (number? form)
+       (not (contains? (source form) "."))
+       (not (contains? (source form) "e"))
+       (not (contains? (source form) "E"))))
+
+(defmacro- literal-bool? [form]
+  (and (form? form)
+       (contains? ["true" "false"] (source form))))
+
 (defmacro- emit-literal-value [form]
-  (if (nil? form)
+  (if (literal-nil? form)
     (quasiquote (value-nil))
     (if (string? form)
     (quasiquote (value-string (unquote form)))
-    (if (int? form)
+    (if (literal-int? form)
       (quasiquote (value-int (unquote form)))
-      (if (bool? form)
+      (if (literal-bool? form)
         (quasiquote (value-bool (unquote form)))
         (if (keyword? form)
           (quasiquote (value-keyword (unquote (source form))))
@@ -219,7 +237,7 @@
 (defmacro- tx-map-has-numeric-id? [form]
   (if (brace? form)
     (if (tx-map-has-id? form)
-      (int? (tx-map-id form))
+      (literal-int? (tx-map-id form))
       false)
     false))
 
@@ -255,7 +273,7 @@
             (unquote e)
             (unquote (emit-attr a))
             (value-entity (unquote value-e))))
-        (if (int? e)
+        (if (literal-int? e)
           (quasiquote
             (add
               (unquote e)
@@ -283,7 +301,7 @@
             (unquote e)
             (unquote (emit-attr a))
             (unquote value-tempid)))
-        (if (int? e)
+        (if (literal-int? e)
           (quasiquote
             (add-value-tempid
               (unquote e)
@@ -315,7 +333,7 @@
               (unquote (emit-attr a))
               (unquote (emit-literal-value v))
               (unquote nested-tempid)))
-          (if (int? e)
+          (if (literal-int? e)
             (quasiquote
               (add-nested-map
                 (unquote e)
@@ -350,7 +368,7 @@
                     a: (unquote (emit-attr a))
                     v: (unquote (emit-literal-value v))
                     from-map-collection: true}))
-        (if (int? e)
+        (if (literal-int? e)
           (quasiquote
             (add-map-collection
               (unquote e)
@@ -360,8 +378,8 @@
 
 (defmacro- reverse-attr-form? [form]
   (and (keyword? form)
-       (or (starts-with? (source form) ":_")
-           (str.contains? (source form) "/_"))))
+       (or (source-starts-with? (source form) ":_")
+           (contains? (source form) "/_"))))
 
 (defmacro- slash-underscore-index [text index]
   (if (>= (+ index 2) (count text))
@@ -372,7 +390,7 @@
 
 (defmacro- forward-attr-source [form]
   (let [attr (source form)]
-    (if (starts-with? attr ":_")
+    (if (source-starts-with? attr ":_")
       (str ":" (slice attr 2))
       (let [index (slash-underscore-index attr 0)]
         (if (< index 0)
@@ -380,7 +398,7 @@
           (str (slice attr 0 (+ index 1)) (slice attr (+ index 2))))))))
 
 (defmacro- emit-tx-map-reverse-attr [group e a v]
-  (if (int? e)
+  (if (literal-int? e)
     (if (lookup-ref? v)
       (quasiquote
         (tx-data-with-map-group
@@ -390,7 +408,7 @@
             (unquote (forward-attr-source a))
             (value-entity (unquote e)))
           (unquote group)))
-      (if (int? v)
+      (if (literal-int? v)
         (quasiquote
           (tx-data-with-map-group
             (add
@@ -482,7 +500,7 @@
       ([]Value [(splice (emit-literal-values args))]))))
 
 (defmacro- emit-tx-data-item [form]
-  (if (nil? form)
+  (if (literal-nil? form)
     (forms)
     (cond
       (vector? form)
@@ -535,7 +553,7 @@
   (contains? ["count" "count-distinct" "distinct" "min" "max" "sum" "avg" "median" "variance" "stddev" "rand" "sample" "aggregate"] op))
 
 (defmacro- query-op-var? [op]
-  (starts-with? op "?"))
+  (source-starts-with? op "?"))
 
 (defmacro- query-function-op? [op]
   (or (query-op-var? op)
@@ -616,7 +634,7 @@
                    (find-var? (nth form 2)))
               (if (top-n-aggregate-op? op)
                 (if (= (count form) 3)
-                  (and (or (int? (nth form 1))
+                  (and (or (literal-int? (nth form 1))
                            (find-var? (nth form 1)))
                        (find-var? (nth form 2)))
                   (and (= (count form) 2)
@@ -733,7 +751,7 @@
 
 (defmacro- relation-source? [form]
   (and (symbol? form)
-       (starts-with? (source form) "$")
+       (source-starts-with? (source form) "$")
        (not (= (source form) "$"))))
 
 (defmacro- input-wildcard? [form]
@@ -917,7 +935,7 @@
         (term-lookup-ref
           (unquote (emit-attr (nth form 0)))
           (unquote (emit-literal-value (nth form 1)))))
-      (if (int? form)
+      (if (literal-int? form)
         (quasiquote (term-entity (unquote form)))
         (if (keyword? form)
           (quasiquote (term-keyword (unquote (source form))))
@@ -932,7 +950,7 @@
       (quasiquote (term-keyword (unquote (source form))))
       (if (string? form)
         (quasiquote (term-keyword (unquote form)))
-        (if (int? form)
+        (if (literal-int? form)
           (quasiquote (term-int (unquote form)))
           (quasiquote (unquote form)))))))
 
@@ -940,7 +958,7 @@
   (if (symbol? form)
     (if (= (source form) "_")
       (quasiquote (term-wildcard))
-      (if (starts-with? (source form) "?")
+      (if (source-starts-with? (source form) "?")
         (quasiquote (term-var (unquote (source form))))
         (quasiquote (term-symbol (unquote (source form))))))
     (if (lookup-ref? form)
@@ -950,9 +968,9 @@
           (unquote (emit-literal-value (nth form 1)))))
       (if (string? form)
         (quasiquote (term-string (unquote form)))
-        (if (int? form)
+        (if (literal-int? form)
           (quasiquote (term-int (unquote form)))
-          (if (bool? form)
+          (if (literal-bool? form)
             (quasiquote (term-bool (unquote form)))
             (if (keyword? form)
               (quasiquote (term-keyword (unquote (source form))))
@@ -1822,7 +1840,7 @@
       false)))
 
 (defmacro- emit-pull-limit [form]
-  (if (nil? form)
+  (if (literal-nil? form)
     (quasiquote -1)
     form))
 
@@ -1943,7 +1961,7 @@
             pattern (nth form 1)]
         (if (vector? pattern)
           (emit-pull-nested-spec attr pattern)
-          (if (int? pattern)
+          (if (literal-int? pattern)
             (quasiquote
               (pull-spec-recursion
                 (unquote (pull-attr-source attr))
@@ -1963,7 +1981,7 @@
 (defmacro- emit-pull-map-spec [attr pattern]
   (if (vector? pattern)
     (emit-pull-nested-spec attr pattern)
-    (if (int? pattern)
+    (if (literal-int? pattern)
       (quasiquote
         (pull-spec-recursion
           (unquote (pull-attr-source attr))
@@ -2052,7 +2070,7 @@
                            args: ([]Term [(splice (emit-aggregate-value-args form))])
                            function-var: (unquote (emit-find-var (nth form 1)))
                            has-function-var: true}))
-        (if (int? (nth form 1))
+        (if (literal-int? (nth form 1))
           (quasiquote
             (Aggregate-Find {op: (unquote (source (first form)))
                              var: (unquote (emit-find-var (nth form 2)))
@@ -2710,9 +2728,9 @@
       (unquote db)
       (unquote (emit-attr attr))
       (unquote (emit-index-arg start))
-      (unquote (if (nil? start) (quasiquote false) (quasiquote true)))
+      (unquote (if (literal-nil? start) (quasiquote false) (quasiquote true)))
       (unquote (emit-index-arg end))
-      (unquote (if (nil? end) (quasiquote false) (quasiquote true))))))
+      (unquote (if (literal-nil? end) (quasiquote false) (quasiquote true))))))
 
 (defmacro index-range-checked [db attr start end]
   (quasiquote
@@ -2720,9 +2738,9 @@
       (unquote db)
       (unquote (emit-attr attr))
       (unquote (emit-index-arg start))
-      (unquote (if (nil? start) (quasiquote false) (quasiquote true)))
+      (unquote (if (literal-nil? start) (quasiquote false) (quasiquote true)))
       (unquote (emit-index-arg end))
-      (unquote (if (nil? end) (quasiquote false) (quasiquote true))))))
+      (unquote (if (literal-nil? end) (quasiquote false) (quasiquote true))))))
 
 (defmacro transact [conn tx-form]
   (if (vector? tx-form)

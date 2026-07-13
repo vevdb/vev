@@ -109,7 +109,7 @@ That local repository can be consumed from a separate test project:
 
 ```clojure
 {:mvn/local-repo "/path/to/vev/build/m2"
- :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0-SNAPSHOT"}}
+ :deps {dev.vevdb/vev-clj {:mvn/version "0.1.0"}}
  :aliases {:run {:jvm-opts ["--enable-preview"
                             "--enable-native-access=ALL-UNNAMED"]}}}
 ```
