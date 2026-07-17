@@ -67,7 +67,15 @@ else
   "$KVIST_BIN" compile "$ROOT/src/vev_abi/vev_abi.kvist" -o "$GENERATED_DIR/vev_abi.odin"
 fi
 
-odin build "$GENERATED_DIR" -build-mode:dll -out:"$LIB_PATH"
+ODIN_BUILD_ARGS=(
+  "$GENERATED_DIR"
+  -build-mode:dll
+  -out:"$LIB_PATH"
+)
+if [[ -n "${VEV_SQLITE_LIB_DIR:-}" ]]; then
+  ODIN_BUILD_ARGS+=("-extra-linker-flags:/LIBPATH:${VEV_SQLITE_LIB_DIR}")
+fi
+odin build "${ODIN_BUILD_ARGS[@]}"
 if [[ -n "$LINK_NAME" && ! -f "$LIB_DIR/$LINK_NAME" ]]; then
   echo "Windows build did not produce import library $LIB_DIR/$LINK_NAME" >&2
   exit 1
