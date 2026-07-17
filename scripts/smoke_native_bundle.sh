@@ -40,6 +40,7 @@ BUNDLE="$TMP_DIR/vev-$VERSION"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     clang \
+      -v \
       -I"$BUNDLE/include" \
       "$ROOT/clients/c/smoke.c" \
       "$BUNDLE/lib/vev.lib" \

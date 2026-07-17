@@ -143,6 +143,7 @@ EOF
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     clang \
+      -v \
       -I"$ROOT/build/include" \
       "$TMP_DIR/smoke.c" \
       "$ROOT/build/lib/vev.lib" \
