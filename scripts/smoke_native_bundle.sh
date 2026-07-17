@@ -42,8 +42,7 @@ case "$(uname -s)" in
     clang \
       -I"$BUNDLE/include" \
       "$ROOT/clients/c/smoke.c" \
-      -L"$BUNDLE/lib" \
-      -lvev \
+      "$BUNDLE/lib/vev.lib" \
       -o "$TMP_DIR/vev-c-smoke.exe"
     PATH="$BUNDLE/lib:$PATH" "$TMP_DIR/vev-c-smoke.exe"
     ;;

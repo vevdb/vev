@@ -145,8 +145,7 @@ case "$(uname -s)" in
     clang \
       -I"$ROOT/build/include" \
       "$TMP_DIR/smoke.c" \
-      -L"$ROOT/build/lib" \
-      -lvev \
+      "$ROOT/build/lib/vev.lib" \
       -o "$TMP_DIR/smoke.exe"
     PATH="$ROOT/build/lib:$PATH" "$TMP_DIR/smoke.exe"
     ;;
