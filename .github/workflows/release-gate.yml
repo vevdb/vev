@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
   pull_request:
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   package:
     name: ${{ matrix.platform }}
@@ -16,6 +20,8 @@ jobs:
             platform: darwin-aarch64
           - runner: ubuntu-24.04
             platform: linux-x86_64
+          - runner: windows-2025
+            platform: windows-x86_64
 
     steps:
       - name: Check out Vev
@@ -66,6 +72,15 @@ jobs:
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang libsqlite3-dev
+
+      - name: Install Windows native dependencies
+        if: runner.os == 'Windows'
+        run: |
+          choco install pkgconfiglite -y
+          vcpkg install sqlite3:x64-windows
+          sqlite_root="$(cygpath -u "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows"
+          echo "$(cygpath -m "$sqlite_root/bin")" >> "$GITHUB_PATH"
+          echo "LIB=$(cygpath -m "$sqlite_root/lib");${LIB:-}" >> "$GITHUB_ENV"
 
       - name: Build Kvist
         working-directory: kvist
@@ -128,12 +143,19 @@ jobs:
           name: release-linux-x86_64
           path: dist/linux-x86_64
 
+      - name: Download Windows release
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows-x86_64
+          path: dist/windows-x86_64
+
       - name: Combine manifests
         run: |
           scripts/combine_release_manifests.py \
             --output dist/manifest.json \
             dist/darwin-aarch64/release/manifest.json \
-            dist/linux-x86_64/release/manifest.json
+            dist/linux-x86_64/release/manifest.json \
+            dist/windows-x86_64/release/manifest.json
 
       - name: Assemble cross-platform JVM release
         run: |
@@ -142,7 +164,8 @@ jobs:
             dist/jvm \
             dist/m2 \
             dist/darwin-aarch64/jvm \
-            dist/linux-x86_64/jvm
+            dist/linux-x86_64/jvm \
+            dist/windows-x86_64/jvm
 
       - name: Record cross-platform JVM artifacts
         run: |

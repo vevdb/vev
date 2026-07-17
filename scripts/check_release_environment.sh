@@ -7,6 +7,7 @@ set -euo pipefail
 case "$(uname -s)" in
   Darwin) OS="darwin" ;;
   Linux) OS="linux" ;;
+  MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
   *) echo "release builds do not support $(uname -s)" >&2; exit 1 ;;
 esac
 
@@ -34,6 +35,7 @@ required_commands=(
   kvist
   node
   odin
+  pkg-config
   python3
   rustc
   shasum

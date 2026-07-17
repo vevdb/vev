@@ -9,9 +9,9 @@ source "$ROOT/scripts/version.sh"
 VERSION="$(vev_version "$ROOT")"
 
 case "$(uname -s)" in
-  Darwin) LIB_NAME="libvev.dylib" ;;
-  Linux) LIB_NAME="libvev.so" ;;
-  MINGW*|MSYS*|CYGWIN*) LIB_NAME="vev.dll" ;;
+  Darwin) LIB_NAME="libvev.dylib"; M2_REPO="$ROOT/build/m2" ;;
+  Linux) LIB_NAME="libvev.so"; M2_REPO="$ROOT/build/m2" ;;
+  MINGW*|MSYS*|CYGWIN*) LIB_NAME="vev.dll"; M2_REPO="$(cygpath -m "$ROOT/build/m2")" ;;
   *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
 esac
 
@@ -28,7 +28,7 @@ cleanup() {
 trap cleanup EXIT
 
 cat > "$TMP_DIR/deps-java.edn" <<EOF
-{:mvn/local-repo "$ROOT/build/m2"
+{:mvn/local-repo "$M2_REPO"
  :deps {dev.vevdb/vev-java {:mvn/version "$VERSION"}}
  :aliases {:run {:jvm-opts ["--enable-preview"
                             "--enable-native-access=ALL-UNNAMED"]}}}
@@ -59,7 +59,7 @@ EOF
 )
 
 cat > "$TMP_DIR/deps-clj.edn" <<EOF
-{:mvn/local-repo "$ROOT/build/m2"
+{:mvn/local-repo "$M2_REPO"
  :deps {dev.vevdb/vev-clj {:mvn/version "$VERSION"}}
  :aliases {:run {:jvm-opts ["--enable-preview"
                             "--enable-native-access=ALL-UNNAMED"]}}}

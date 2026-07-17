@@ -87,11 +87,15 @@ machine-local package path.
 
 ## Remaining Work
 
-1. Publish the verified combined `vev-java` and `vev-clj` artifacts to the
+1. Complete the native Windows x86-64 release gate. Windows must build
+   `vev.dll` plus its import library, pass the in-memory and durable SQLite
+   package suite, contribute its native resource to the combined JVM artifact,
+   and pass fresh Java/Clojure coordinate resolution before it is advertised.
+2. Publish the verified combined `vev-java` and `vev-clj` artifacts to the
    selected public Maven repository. The combined release already verifies
    clean consumer caches against a temporary Maven HTTPS repository, without
    repository-local classpaths, native paths, or `:mvn/local-repo`.
-2. Cut the first tagged release from a successful gate run and publish its
+3. Cut the first tagged release from a successful gate run and publish its
    checksummed native bundles, combined JVM artifacts, source package, and
    adapter packages.
 

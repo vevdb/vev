@@ -29,5 +29,6 @@ cleanup() {
 trap cleanup EXIT
 
 odin build "$ROOT/clients/odin" -file -out:"$TMP_DIR/vev_odin_smoke"
-"$TMP_DIR/vev_odin_smoke" "$ROOT/build/lib/$LIB_NAME" >/dev/null
+PATH="$ROOT/build/lib:$PATH" \
+  "$TMP_DIR/vev_odin_smoke" "$ROOT/build/lib/$LIB_NAME" >/dev/null
 echo ":vev-odin-package-ok"
