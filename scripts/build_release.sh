@@ -10,11 +10,7 @@ release_step() {
   local name="$1"
   shift
   echo "release-stage=$name" >&2
-  if [[ "${VEV_TRACE_RELEASE:-}" == "1" ]]; then
-    bash -x "$@"
-  else
-    "$@"
-  fi
+  "$@"
 }
 
 release_step environment "$ROOT/scripts/check_release_environment.sh" >/dev/null

@@ -8,6 +8,8 @@ native Vev library links to the platform SQLite library at runtime. On macOS
 this is normally already present. On Linux and other deployment targets, the
 runtime image needs a compatible SQLite shared library installed unless the Vev
 package for that target is later changed to bundle or statically link SQLite.
+On Windows the native release contains `vev.dll` and `vev.lib`; `sqlite3.dll`
+must be available beside `vev.dll` or on `PATH`.
 
 This is intentionally similar to using Datomic with SQLite as the durable
 backend: SQLite is part of the storage setup, but application code still talks
@@ -17,7 +19,7 @@ to Datomic/Vev, not to SQLite directly.
 
 For the current local build:
 
-- the Vev native library, such as `libvev.dylib` or `libvev.so`
+- the Vev native library, such as `libvev.dylib`, `libvev.so`, or `vev.dll`
 - the host wrapper for the language being used
 - a system SQLite runtime library
 - for Java/Clojure, Java 21 with the required FFM flags while the wrapper uses
@@ -44,7 +46,26 @@ On Linux:
 ldd build/lib/libvev.so
 ```
 
+On Windows:
+
+```powershell
+dumpbin /dependents build\lib\vev.dll
+```
+
 If SQLite is dynamically linked, these commands should show a SQLite library.
+
+## Windows SQLite
+
+The verified Windows x86-64 release gate uses vcpkg:
+
+```powershell
+vcpkg install sqlite3:x64-windows
+```
+
+Add `installed\x64-windows\bin` to `PATH` when running Vev. Applications that
+compile Vev's Kvist or Odin source package also need
+`installed\x64-windows\lib` in the linker search path so `sqlite3.lib` can be
+resolved. Consumers of the prebuilt Vev DLL need only the runtime DLL.
 
 ## Store Paths
 
