@@ -6,6 +6,7 @@ from __future__ import annotations
 import ctypes
 import os
 import pathlib
+import platform
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -138,7 +139,7 @@ def _platform_id() -> str:
     else:
         os_name = sys.platform
 
-    machine = os.uname().machine.lower() if hasattr(os, "uname") else ""
+    machine = platform.machine().lower()
     if machine in ("arm64", "aarch64"):
         arch = "aarch64"
     elif machine in ("x86_64", "amd64"):
