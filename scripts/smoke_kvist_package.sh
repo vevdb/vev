@@ -47,15 +47,29 @@ EOF
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
       BINARY="$PACKAGE_ROOT/smoke.exe"
-      DRIVE="${PACKAGE_ROOT%%:*}"
+      WINDOWS_GENERATED="$(cygpath -m "$PACKAGE_ROOT/smoke.odin")"
+      WINDOWS_BINARY="$(cygpath -m "$BINARY")"
       ;;
     *)
       BINARY="$PACKAGE_ROOT/smoke"
       ;;
   esac
   kvist compile smoke.kvist -o "$PACKAGE_ROOT/smoke.odin" >/dev/null
-  if [[ -n "${DRIVE:-}" ]]; then
-    odin build "$PACKAGE_ROOT/smoke.odin" -file "-collection:$DRIVE=$DRIVE:/" -out:"$BINARY"
+  if [[ -n "${WINDOWS_GENERATED:-}" ]]; then
+    COLLECTION_ARGS=()
+    while IFS= read -r drive; do
+      COLLECTION_ARGS+=("-collection:$drive=$drive:/")
+    done < <(
+      sed -nE 's/^import .*"([A-Za-z]):[\\/].*/\1/p' "$PACKAGE_ROOT/smoke.odin" |
+        tr '[:lower:]' '[:upper:]' |
+        sort -u
+    )
+    if (( ${#COLLECTION_ARGS[@]} == 0 )); then
+      echo "generated Kvist package has no Windows import collections" >&2
+      exit 1
+    fi
+    MSYS2_ARG_CONV_EXCL="*" odin build "$WINDOWS_GENERATED" -file \
+      "${COLLECTION_ARGS[@]}" -out:"$WINDOWS_BINARY"
   else
     odin build "$PACKAGE_ROOT/smoke.odin" -file -out:"$BINARY"
   fi
