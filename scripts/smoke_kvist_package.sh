@@ -44,7 +44,18 @@ EOF
 
 (
   cd "$PACKAGE_ROOT"
-  kvist run smoke.kvist >/dev/null
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) BINARY="$PACKAGE_ROOT/smoke.exe" ;;
+    *) BINARY="$PACKAGE_ROOT/smoke" ;;
+  esac
+  kvist build smoke.kvist --out "$BINARY" >/dev/null
+  if ! "$BINARY"; then
+    if command -v objdump >/dev/null 2>&1; then
+      objdump -p "$BINARY" | grep "DLL Name" >&2 || true
+    fi
+    echo "packaged Kvist executable failed" >&2
+    exit 1
+  fi
 )
 
 echo ":vev-kvist-package-ok"
