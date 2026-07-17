@@ -68,8 +68,14 @@ EOF
       echo "generated Kvist package has no Windows import collections" >&2
       exit 1
     fi
+    if [[ -z "${VEV_SQLITE_LIB_DIR:-}" ]]; then
+      echo "VEV_SQLITE_LIB_DIR is required for the Windows Kvist package smoke" >&2
+      exit 1
+    fi
     MSYS2_ARG_CONV_EXCL="*" odin build "$WINDOWS_GENERATED" -file \
-      "${COLLECTION_ARGS[@]}" -out:"$WINDOWS_BINARY"
+      "${COLLECTION_ARGS[@]}" \
+      "-extra-linker-flags:/LIBPATH:$VEV_SQLITE_LIB_DIR" \
+      -out:"$WINDOWS_BINARY"
   else
     odin build "$PACKAGE_ROOT/smoke.odin" -file -out:"$BINARY"
   fi
