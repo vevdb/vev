@@ -38,7 +38,6 @@ required_commands=(
   pkg-config
   python3
   rustc
-  shasum
   tar
   unzip
 )
@@ -54,6 +53,12 @@ if (( ${#missing[@]} > 0 )); then
   printf 'release environment is missing required commands:' >&2
   printf ' %s' "${missing[@]}" >&2
   printf '\n' >&2
+  exit 1
+fi
+
+if ! command -v shasum >/dev/null 2>&1 &&
+   ! command -v sha256sum >/dev/null 2>&1; then
+  echo "release environment is missing shasum or sha256sum" >&2
   exit 1
 fi
 
