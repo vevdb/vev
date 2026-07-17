@@ -48,7 +48,7 @@ EOF
     MINGW*|MSYS*|CYGWIN*) BINARY="$PACKAGE_ROOT/smoke.exe" ;;
     *) BINARY="$PACKAGE_ROOT/smoke" ;;
   esac
-  kvist build smoke.kvist --out "$BINARY" >/dev/null
+  kvist build smoke.kvist --generated "$PACKAGE_ROOT/smoke.odin" --out "$BINARY" >/dev/null
   if ! "$BINARY"; then
     if command -v objdump >/dev/null 2>&1; then
       objdump -p "$BINARY" | grep "DLL Name" >&2 || true
