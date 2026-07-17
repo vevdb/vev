@@ -31,6 +31,14 @@ unavailable() {
 command -v node >/dev/null 2>&1 || unavailable "node not found"
 command -v clang++ >/dev/null 2>&1 || unavailable "clang++ not found"
 
+NODE_VERSION="$(node -p 'process.versions.node')"
+NODE_GYP_CACHE=""
+if [[ -n "${LOCALAPPDATA:-}" ]] && command -v cygpath >/dev/null 2>&1; then
+  NODE_GYP_CACHE="$(cygpath -u "$LOCALAPPDATA")/node-gyp/Cache/$NODE_VERSION"
+elif [[ -n "${HOME:-}" ]]; then
+  NODE_GYP_CACHE="$HOME/.cache/node-gyp/$NODE_VERSION"
+fi
+
 NODE_INCLUDE_DIR="${NODE_INCLUDE_DIR:-}"
 if [[ -z "$NODE_INCLUDE_DIR" ]]; then
   NODE_BIN_DIR="$(cd "$(dirname "$(command -v node)")" && pwd)"
@@ -38,6 +46,7 @@ if [[ -z "$NODE_INCLUDE_DIR" ]]; then
   for candidate in \
     "$NODE_BIN_DIR/include/node" \
     "$NODE_PREFIX/include/node" \
+    "$NODE_GYP_CACHE/include/node" \
     /usr/local/include/node \
     /usr/include/node; do
     if [[ -f "$candidate/node_api.h" ]]; then
@@ -86,7 +95,8 @@ case "$(uname -s)" in
     if [[ -z "$NODE_LIB" ]]; then
       for candidate in \
         "$NODE_BIN_DIR/node.lib" \
-        "$NODE_PREFIX/node.lib"; do
+        "$NODE_PREFIX/node.lib" \
+        "$NODE_GYP_CACHE/x64/node.lib"; do
         if [[ -f "$candidate" ]]; then
           NODE_LIB="$candidate"
           break
