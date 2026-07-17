@@ -45,10 +45,20 @@ EOF
 (
   cd "$PACKAGE_ROOT"
   case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) BINARY="$PACKAGE_ROOT/smoke.exe" ;;
-    *) BINARY="$PACKAGE_ROOT/smoke" ;;
+    MINGW*|MSYS*|CYGWIN*)
+      BINARY="$PACKAGE_ROOT/smoke.exe"
+      DRIVE="${PACKAGE_ROOT%%:*}"
+      ;;
+    *)
+      BINARY="$PACKAGE_ROOT/smoke"
+      ;;
   esac
-  kvist build smoke.kvist --generated "$PACKAGE_ROOT/smoke.odin" --out "$BINARY" >/dev/null
+  kvist compile smoke.kvist -o "$PACKAGE_ROOT/smoke.odin" >/dev/null
+  if [[ -n "${DRIVE:-}" ]]; then
+    odin build "$PACKAGE_ROOT/smoke.odin" -file "-collection:$DRIVE=$DRIVE:/" -out:"$BINARY"
+  else
+    odin build "$PACKAGE_ROOT/smoke.odin" -file -out:"$BINARY"
+  fi
   if ! "$BINARY"; then
     if command -v objdump >/dev/null 2>&1; then
       objdump -p "$BINARY" | grep "DLL Name" >&2 || true
