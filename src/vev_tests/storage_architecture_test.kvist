@@ -1337,7 +1337,8 @@
         [before before-ok before-error] (vev.sqlite-index-run-manifest-count path)
         [manifest-id manifest-ok manifest-error] (vev.sqlite-create-index-run-manifest-for-test path ":aevt")
         [after after-ok after-error] (vev.sqlite-index-run-manifest-count path)
-        [run-count run-count-ok run-count-error] (vev.sqlite-index-run-manifest-run-count-for-test path manifest-id)]
+        [run-count run-count-ok run-count-error] (vev.sqlite-index-run-manifest-run-count-for-test path manifest-id)
+        [bound-count bound-count-ok bound-count-error] (vev.sqlite-index-run-manifest-run-bounds-count-for-test path manifest-id)]
     (defer (remove-sqlite-files path))
     (t.is opened-ok)
     (t.is (= opened-error ""))
@@ -1354,6 +1355,8 @@
     (t.is run-count-ok)
     (t.is (= run-count-error ""))
     (t.is (= run-count 1))
+    (t.is bound-count-ok bound-count-error)
+    (t.is (= bound-count 1))
     (vev.delete-tx-report-shallow report)
     (vev.close-sqlite-conn store)))
 
@@ -3657,6 +3660,44 @@
         (t.is (not (result-has-string-row? after-write.result "Ada")))
         (vev.delete-query-result after-write)
         (vev.delete-store-tx-report report))
+      (vev.close-store reopened))))
+
+(t.deftest sqlite-store-keeps-tempids-out-of-transaction-partition-across-transactions
+  (defer (free_all context.allocator))
+  (remove-sqlite-files "tmp.vev.tempid-partition.sqlite")
+  (let [path "tmp.vev.tempid-partition.sqlite"
+        [store opened-ok opened-error] (vev.open-store path)
+        first (vev.transact-store-text (addr store) "[{:db/id 1 :bootstrap/value true}]")
+        created (vev.transact-store-report-text (addr store) "[{:db/id \"item\" :item/name \"Ada\"}]")
+        [item-id item-ok] (vev.tempid-lookup (slice created.tempids 0) "item")]
+    (defer (remove-sqlite-files path))
+    (t.is opened-ok)
+    (t.is (= opened-error ""))
+    (t.is first.ok first.error)
+    (t.is created.ok created.error)
+    (t.is item-ok)
+    (t.is (< item-id vev.tx-partition-base))
+    (vev.delete-live-tx-report-shallow first)
+    (vev.delete-store-tx-report created)
+    (vev.close-store store)
+    (let [[reopened reopened-ok reopened-error] (vev.open-store path)
+          replacement-text (fmt.tprintf "[[:db/add %d :item/name \"Ada Lovelace\"]]" item-id)
+          replaced (vev.transact-store-report-text (addr reopened) replacement-text)]
+      (t.is reopened-ok)
+      (t.is (= reopened-error ""))
+      (t.is replaced.ok replaced.error)
+      (delete replacement-text)
+      (vev.delete-store-tx-report replaced)
+      (vev.close-store reopened))
+    (let [[reopened reopened-ok reopened-error] (vev.open-store path)
+          result (vev.q-result-store-text (addr reopened) "[:find ?name :where [?e :item/name ?name]]")]
+      (t.is reopened-ok)
+      (t.is (= reopened-error ""))
+      (t.is result.result.ok result.result.error)
+      (t.is (= (count result.result.rows) 1))
+      (t.is (result-has-string-row? result.result "Ada Lovelace"))
+      (t.is (not (result-has-string-row? result.result "Ada")))
+      (vev.delete-query-result result)
       (vev.close-store reopened))))
 
 (t.deftest sqlite-store-report-direct-write-supports-retract
@@ -7867,3 +7908,31 @@
       (vev.delete-store-tx-report source-fn-report))
     (vev.close-store store)
     (remove-sqlite-files path)))
+
+(t.deftest sqlite-dense-bound-entity-get-else-uses-batched-source-operator
+  (defer (free_all context.allocator))
+  (remove-sqlite-files "tmp.vev.dense-get-else.sqlite")
+  (let [path "tmp.vev.dense-get-else.sqlite"
+        [store store-ok store-error] (vev.open-store path)
+        tx-data (make [dynamic]vev.Tx-Data) :defer]
+    (defer (remove-sqlite-files path))
+    (t.is store-ok store-error)
+    (for [index (arr.range 1 301)]
+      (arr.push! tx-data (vev.add (u64 index) ":item/id" (vev.value-int (i64 index)))))
+    (let [report (vev.transact-store-report-tx-data (addr store) (slice tx-data 0))
+          profiled (vev.q-profiled-store-db-text
+                     (addr report.db-after)
+                     "[:find ?e ?fallback :where [?e :item/id] [(get-else $ ?e :item/missing 0) ?fallback]]")]
+      (t.is report.ok report.error)
+      (t.is profiled.result.ok profiled.result.error)
+      (t.is (= (count profiled.result.rows) 300))
+      (t.is (> profiled.stats.source-index-scans 0))
+      (t.is (> profiled.stats.source-operators 0))
+      (t.is (= profiled.stats.binding-materializations 0))
+      (for [row profiled.result.rows]
+        (t.is (= (count row.values) 2))
+        (t.is (= row.values[1].kind .Int))
+        (t.is (= row.values[1].int-value 0)))
+      (vev.delete-profiled-result-set-owned-values profiled)
+      (vev.delete-store-tx-report report))
+    (vev.close-store store)))

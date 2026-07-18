@@ -1,14 +1,12 @@
 # Next Steps
 
-This document contains the current Vev release gate and remaining work. It is
-not a changelog.
+This document is the current Vev work plan. It is not a changelog.
 
 ## Current State
 
-Vev is usable as an embedded, native, Datomic-shaped database from Kvist,
-Clojure, Java, C, Python, Rust, Node, Go, and Odin. Its primary application
-surface is `q`, `pull`, `transact`, `db`, and `db-with` over connections and
-immutable database values.
+Vev is an embedded native database with in-memory and SQLite-backed durable
+connections. Kvist and Clojure expose Datomic-shaped `q`, `pull`, `transact`,
+`db`, and `db-with` APIs. Other hosts use the C ABI or language adapters.
 
 - In-memory databases are first-class and require no SQLite.
 - Durable databases use system SQLite behind Vev connection and DB-value APIs.
@@ -47,46 +45,92 @@ immutable database values.
   is the only missing artifact.
 - The development native layout stages `include`, `lib`, and relocatable
   pkg-config metadata with the same structure as release bundles.
+- The cross-platform release gate passes on macOS arm64, Linux x86-64, and
+  Windows x86-64, including native and host-language package smokes. Windows is
+  usable but not yet expected to have identical developer ergonomics to Unix.
 
-The real 1968-1973 MusicBrainz sample currently validates the complete paired
-Clojure and Kvist workshop. The setup uses pinned upstream sources rather than
-copied or invented examples:
+Kvist runtime transactions and query inputs use ordinary contextual `Data`
+literals. Static symbolic Datalog queries remain quoted:
 
-- `Datomic/mbrainz-sample` at `a7c0aab6828cfa09d5ff3c6075579673377b4a43`
-- `Datomic/day-of-datomic` at `daa457f766e16f55243a95513e759573b8827329`
-- `Datomic/day-of-datomic-conj` at `cf1e260cff0aa582fe2ae17bb1fcfaeebb139f80`
+```clojure
+(vev.transact conn
+  [[:db/add [:entity/id id] :entity/value value]])
 
-On the current development machine, importing 763,299 MusicBrainz datoms takes
-about 18.4 seconds and persisting their indexed durable store takes about 19.6
-seconds. The complete Clojure workshop then passes in about 15 seconds. The
-complete Kvist workshop reports `source=kvist section=summary ok=true`.
+(d.q
+  '[:find ?name
+    :where [?e :contact/name ?name]]
+  db)
+```
 
-Durable schema changes are versioned. Normal connection open no longer reruns
-all migrations or rewrites the FTS index: a marked 763,299-datom store opens in
-about 12 ms instead of about 10.2 seconds. An older unmarked store pays the
-migration once and is marked for later opens.
+The 379-test Vev engine suite passes with the current Kvist compiler.
 
-Kvist's `kvist:edn` reader builds parsed vectors, lists, sets, and maps with
-linear mutable builders followed by one immutable freeze. A 100,000-form,
-5.1 MB MusicBrainz transaction chunk parses in about 0.4 seconds rather than
-following the former quadratic append path. This work is on Kvist main and is
-verified through the installed `kvist` binary.
+## Active Scale Work
 
-Vev vendors the optional official `kvist:cli` package under `deps/cli`, pinned
-to its upstream revision, so repository builds do not depend on an undeclared
-machine-local package path.
+Ro's outline benchmark is the current application-scale workload:
+
+```sh
+cd /Users/andreas/Projects/ro/ro-next
+./scripts/benchmark-outline.sh --full
+```
+
+The benchmark separately measures fixture construction, durable transaction,
+query materialization, and HTML rendering. Fixture construction and rendering
+are not bottlenecks.
+
+Current development measurements:
+
+| Rows | Build | Durable transaction | Materialize | Optional parent | Render |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 0.3 ms | 0.032 s | 0.050 s | 0.011 s | 1.6 ms |
+| 1,000 | 3.0 ms | 0.294 s | 0.452 s | 0.050 s | 15 ms |
+| 10,000 | 30 ms | 3.172 s | 2.788 s | 0.409 s | 158 ms |
+
+The original 1,000-row durable transaction took about 17.2 seconds and the
+10,000-row transaction did not finish within three minutes.
+
+Bulk transaction preparation is now linear for the outline workload.
+Transaction-local indexes resolve tempids and unique values, classify repeated
+lookup refs once, and cache source resolutions. The post-resolution overlay
+uses indexed unique-value and cardinality-one state rather than repeatedly
+scanning prior operations.
+
+Durable secondary fulltext data is now written only for attributes declared
+`:db/fulltext true`, matching Datomic and Datalevin semantics. Prepared
+statements are reused for fulltext and term writes.
+
+At 10,000 rows, measured transaction phases are about 0.26 seconds resolving,
+1.07 seconds validating/materializing the overlay, 0.34 seconds appending
+datoms, and 0.90 seconds publishing persisted index roots. The transaction no
+longer contains a quadratic planner scan.
+
+The chained optional-parent `get-else` query now uses a general typed batch
+operator instead of one durable lookup per result row. Dense durable entity
+sets use one bounded EAVT range scan; sparse sets retain indexed point reads.
+The query engine's already-distinct rows cross into `Data` through a trusted
+linear set constructor rather than being structurally deduplicated a second
+time. Optional-parent scaling is now near-linear through 10,000 rows.
+
+The remaining visible cost is total collection materialization. Ro performs
+separate item, parent, and status queries; together they take about 2.8 seconds
+for 10,000 rows before HTML rendering.
+
+Persisted index manifests now load all ordered run bounds with one SQLite
+statement per manifest instead of preparing one statement per run. This reduced
+the measured 10,000-row collection materialization path from about 3.4 seconds
+to 2.8 seconds and benefits every query that traverses durable immutable index
+runs.
 
 ## Hard Constraints
 
-- In-memory mode must remain independent of SQLite.
-- Durable storage details must remain behind normal Vev APIs.
-- Clojure and Kvist APIs remain Datomic-shaped, including query-first `q` with
-  the database value after the query form.
-- Reusable Kvist database forms are named immutable data, not string-only or
-  macro-only representations.
-- Non-Kvist consumers are primary supported product surfaces.
-- Engine and storage changes must be general mechanisms, not benchmark-specific
-  query handling.
+- In-memory mode remains first-class and independent of SQLite.
+- SQLite remains an implementation detail behind normal Vev APIs.
+- Engine and storage improvements must be general mechanisms, not
+  benchmark-specific query handling.
+- Immutable database values and Datomic-shaped host APIs remain intact.
+- Runtime `Data` uses ordinary literals; quote is reserved for symbolic data
+  and code.
+- Performance issues should be compared with DataScript, Datomic, and
+  Datalevin implementations before choosing an algorithm.
 
 ## Remaining Work
 
@@ -97,35 +141,49 @@ machine-local package path.
 2. Cut the first tagged release from a successful gate run and publish its
    checksummed native bundles, combined JVM artifacts, source package, and
    adapter packages.
+3. Profile the complete 10,000-row collection materialization path and reduce
+   its multiple query/result passes. Prefer a reusable multi-attribute
+   projection or typed-column boundary over application-specific fusion.
+4. Carry typed columns through result projection and the application boundary
+   where measurements still show repeated scalar boxing and decoding.
+5. Keep the durable transaction and optional-parent profiles as regression
+   gates.
+   Revisit typed root batches and append serialization only when measurements
+   show those phases dominate a real workload.
+6. Keep contextual `Data` usage canonical.
+   Remove remaining runtime quasiquote/unquote construction in Vev examples
+   and adapters where an expected `Data` type can carry ordinary literals.
+   Compile-time macro construction is not part of this cleanup.
+7. Run correctness and scale gates after each storage or query change.
+   Include Vev engine tests, durable reopen tests, Ro checks, and the full
+   10,000-row benchmark.
 
-Parser diagnostic exactness, additional DataScript edge cases, and specialized
-query optimizations continue after this release gate. They are not allowed to
-delay a working MusicBrainz tutorial and normal package consumption unless they
-expose correctness or safety failures.
+Parser diagnostic exactness and additional DataScript edge cases continue
+after the release and scale gates unless they expose correctness or safety
+failures.
 
 ## Exit Criteria
 
-This gate is complete when:
+The bulk transaction and optional-parent batch is complete. Its regression
+criteria are:
 
-- the installed Kvist compiler passes the 379-test engine suite, parser-input
-  suite, and MusicBrainz mini suite
-- a clean MusicBrainz setup completes both Clojure and Kvist workshops
-- contact-book examples pass through the canonical application API
-- one versioned command produces a complete checksummed artifact manifest
-- macOS arm64, Linux x86-64, and Windows x86-64 artifacts pass package-only
-  host smokes
-- the combined manifest proves that all three platform releases came from the
-  same Vev commit and agree on all platform-independent artifact hashes
-- fresh Clojure and Java projects consume staged or published coordinates
-  without repository-local setup
+- optional-parent `get-else` performs bounded batch reads and scales
+  near-linearly through 10,000 rows
+- the 10,000-row durable transaction remains below 3.5 seconds on the
+  development machine
+- the 379-test engine suite passes
+- Ro's check, test, smoke, and `benchmark-outline.sh --full` commands pass
 
-## Verification Commands
+The next materialization batch is complete when profiling identifies the
+dominant remaining 10,000-row costs and a general operator or result-boundary
+change reduces them without regressing correctness, in-memory mode, or smaller
+workloads.
+
+## Verification
 
 ```sh
 kvist test src/vev_tests/vev_test.kvist
-kvist test src/vev_tests/parser_input_test.kvist
-kvist test src/vev_tests/musicbrainz_test.kvist
 
-scripts/musicbrainz_workshop_setup.sh --from-datomic --validate
-scripts/build_release.sh
+cd /Users/andreas/Projects/ro/ro-next
+./scripts/benchmark-outline.sh --full
 ```
