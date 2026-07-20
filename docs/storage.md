@@ -127,9 +127,9 @@ retained DB-value benchmarking also remain next work.
 
 SQLite-specific names such as `open-sqlite-conn`, `transact-sqlite-*`,
 `vev_sqlite_conn_*`, `open-sqlite`, and `openSqlite` remain compatibility,
-debug, or low-level backend entry points. They should not be used in tutorial
-or normal application examples. Older resident-shaped `Tx-Report` paths are
-resident compatibility only; reopened durable stores should either use
+debug, or raw C ABI entry points. Application code should use `connect`.
+Older resident-shaped `Tx-Report` paths are resident compatibility only;
+reopened durable stores should either use
 `Store-Tx-Report`/`Store-DB` or fail loudly instead of silently rebuilding a
 resident DB.
 Likewise, `vev_conn_from_db` is a resident/in-memory compatibility escape hatch.
@@ -462,9 +462,9 @@ storage-neutral connection handles:
 
 The current durable backend is SQLite. A plain filesystem path and
 `sqlite://...` URI both select the SQLite backend. The older
-`vev_sqlite_conn_*`, `open-sqlite`, and `openSqlite` names remain as
-backend-specific compatibility/debug entry points, but application examples
-should use the neutral `connect` shape.
+`vev_sqlite_conn_*`, `open-sqlite`, and `openSqlite` names remain for
+compatibility and debugging; normal host-client code uses the neutral
+`connect` shape.
 
 Durable connection metadata is available through the same neutral boundary:
 `vev_connection_backend` reports `"sqlite"` today, `vev_connection_path`

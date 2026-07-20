@@ -1,0 +1,194 @@
+; Copyright (c) Andreas Flakstad and Vev contributors
+; SPDX-License-Identifier: EPL-2.0
+
+(package main)
+
+(import fmt "core:fmt")
+(import os "core:os")
+(import kdata "kvist:data")
+(import d "../vev_app")
+
+(def test-path "/tmp/vev-history-api.sqlite")
+
+(defn remove-test-store! []
+  (os.remove test-path)
+  (os.remove "/tmp/vev-history-api.sqlite-wal")
+  (os.remove "/tmp/vev-history-api.sqlite-shm"))
+
+(defn fail! [message: string]
+  (fmt.eprintln message)
+  (os.exit 1))
+
+(defn first-tx-id [conn: d.Conn] -> u64
+  (let [db (d.db conn) :defer-with d.close
+        ids: Data
+          (d.q
+            '[:find [?tx ...]
+              :in $ ?log ?start ?end
+              :where [(tx-ids ?log ?start ?end) [?tx ...]]]
+            db
+            (d.log conn)
+            (kdata.from-int 0)
+            (kdata.from-int 9223372036854775807))]
+    (for [id ids]
+      (when (kdata.int? id)
+        (return (u64 (kdata.int id)))))
+    0))
+
+(defn query-name-count [db: d.DB, name: string] -> int
+  (let [rows: Data
+          (d.q
+            '[:find ?name
+              :in $ ?expected
+              :where [1 :user/name ?name]
+                     [(= ?name ?expected)]]
+            db
+            (kdata.from-string name))]
+    (count rows)))
+
+(defn instant-data [text: string] -> Data
+  (kdata.tagged "inst" (kdata.from-string text)))
+
+(defn main []
+  (remove-test-store!)
+  (defer (remove-test-store!))
+  (let [conn (d.connect test-path)]
+    (defer (d.close conn))
+    (d.transact conn [[:db/add 1 :user/name "Ada"]])
+    (let [tx1 (first-tx-id conn)]
+      (d.transact conn [[:db/retract 1 :user/name "Ada"]
+                        [:db/add 1 :user/name "Grace"]])
+      (let [db (d.db conn) :defer-with d.close
+            as-of-db (d.as-of db tx1) :defer-with d.close
+            since-db (d.since db tx1) :defer-with d.close
+            history-db (d.history db) :defer-with d.close
+            history-as-of-db (d.history as-of-db) :defer-with d.close
+            hypothetical-as-of-db
+              (d.db-with as-of-db [[:db/add 1 :user/name "Future"]])
+              :defer-with d.close
+            history-rows: Data
+              (d.q
+                '[:find ?name ?tx ?added
+                  :where [1 :user/name ?name ?tx ?added]]
+                history-db)
+            early-history-rows: Data
+              (d.q
+                '[:find ?name ?tx ?added
+                  :where [1 :user/name ?name ?tx ?added]]
+                history-as-of-db)]
+        (when (or (not (= (d.t-to-tx 1) tx1))
+                  (not (= (d.tx-to-t tx1) 1)))
+          (fail! "t/tx coordinate conversion did not round-trip"))
+        (let [tx-rows: Data
+                (d.q
+                  '[:find ?attribute ?value ?added
+                    :in $ ?log ?tx
+                    :where [(tx-data ?log ?tx) [[_ ?attribute ?value _ ?added]]]]
+                  db
+                  (d.log conn)
+                  tx1)]
+          (when (= (count tx-rows) 0)
+            (fail! "canonical tx-data relation binding did not return the transaction")))
+        (when (not (= (query-name-count as-of-db "Ada") 1))
+          (fail! "as-of did not restore the earlier assertion"))
+        (when (not (= (query-name-count as-of-db "Grace") 0))
+          (fail! "as-of exposed a later assertion"))
+        (when (not (= (query-name-count since-db "Ada") 0))
+          (fail! "since exposed an assertion at or before its exclusive bound"))
+        (when (not (= (query-name-count since-db "Grace") 1))
+          (fail! "since did not expose the later assertion"))
+        (when (not (= (count history-rows) 3))
+          (fail! "history did not expose both assertions and the retraction"))
+        (when (not (= (count early-history-rows) 1))
+          (fail! "as-of and history filters did not compose"))
+        (when (not (= (query-name-count hypothetical-as-of-db "Future") 0))
+          (fail! "db-with escaped the as-of filter"))
+        (fmt.println "history-api durable: ok"))))
+  (let [conn (d.create-conn)]
+    (defer (d.close conn))
+    (d.transact conn [[:db/add 1 :user/name "Ada"]])
+    (d.transact conn [[:db/retract 1 :user/name "Ada"]
+                      [:db/add 1 :user/name "Grace"]])
+    (let [db (d.db conn) :defer-with d.close
+          as-of-db (d.as-of db (u64 4611686018427387904)) :defer-with d.close
+          as-of-t-db (d.as-of db (u64 1)) :defer-with d.close
+          since-db (d.since db (u64 4611686018427387904)) :defer-with d.close
+          since-t-db (d.since db (u64 1)) :defer-with d.close
+          history-db (d.history db) :defer-with d.close
+          all-transactions (d.tx-range (d.log conn) (kdata.from-nil) (kdata.from-nil))
+          second-transaction-onward (d.tx-range (d.log conn) (kdata.from-int 2) (kdata.from-nil))
+          history-rows: Data
+            (d.q
+              '[:find ?name ?tx ?added
+                :where [1 :user/name ?name ?tx ?added]]
+              history-db)]
+      (when (not (= (query-name-count as-of-db "Ada") 1))
+        (fail! "resident as-of did not restore the earlier assertion"))
+      (when (not (= (query-name-count as-of-t-db "Ada") 1))
+        (fail! "resident as-of did not accept basis t"))
+      (when (not (= (query-name-count since-db "Grace") 1))
+        (fail! "resident since did not expose the later assertion"))
+      (when (not (= (query-name-count since-t-db "Grace") 1))
+        (fail! "resident since did not accept basis t"))
+      (when (not (= (count history-rows) 3))
+        (fail! "resident history did not expose the full fact history"))
+      (when (or (not (= (d.basis-t db) 2))
+                (not (= (d.next-t db) 3))
+                (not (kdata.nil? (d.as-of-t db)))
+                (not (kdata.nil? (d.since-t db)))
+                (d.history? db))
+        (fail! "resident current DB metadata did not match Datomic semantics"))
+      (when (or (not (= (d.basis-t as-of-t-db) 2))
+                (not (= (kdata.int (d.as-of-t as-of-t-db)) 1))
+                (not (= (kdata.int (d.since-t since-t-db)) 1))
+                (not (d.history? history-db)))
+        (fail! "resident filtered DB metadata did not match Datomic semantics"))
+      (when (or (not (= (count all-transactions) 2))
+                (not (= (count second-transaction-onward) 1)))
+        (fail! "resident tx-range did not use inclusive/exclusive t bounds"))
+      (fmt.println "history-api resident: ok")))
+  (let [conn (d.create-conn)
+        first-time (instant-data "2020-01-01T00:00:00.000Z")
+        second-time (instant-data "2021-01-01T00:00:00.000Z")]
+    (defer (d.close conn))
+    (d.transact conn
+      [{:db/id "datomic.tx" :db/txInstant first-time}
+       [:db/add 1 :user/name "Ada"]])
+    (let [first-db (d.db conn) :defer-with d.close
+          first-instant: Data
+            (d.q
+              '[:find ?instant .
+                :where [1 :user/name "Ada" ?tx]
+                       [?tx :db/txInstant ?instant]]
+              first-db)]
+      (d.transact conn
+        [{:db/id "datomic.tx" :db/txInstant second-time}
+         [:db/retract 1 :user/name "Ada"]
+         [:db/add 1 :user/name "Grace"]])
+      (let [db (d.db conn) :defer-with d.close
+            exact (d.as-of db first-instant) :defer-with d.close
+            before (d.as-of db (instant-data "2000-01-01T00:00:00.000Z")) :defer-with d.close
+            after (d.as-of db (instant-data "2100-01-01T00:00:00.000Z")) :defer-with d.close
+            recent (d.since db first-instant) :defer-with d.close
+            from-second
+              (d.tx-range
+                (d.log conn)
+                (instant-data "2020-06-01T00:00:00.000Z")
+                (kdata.from-nil))
+            until-second
+              (d.tx-range
+                (d.log conn)
+                (kdata.from-nil)
+                second-time)]
+        (when (not (= (query-name-count exact "Ada") 1))
+          (fail! "Kvist instant as-of did not include the exact transaction"))
+        (when (not (= (query-name-count before "Ada") 0))
+          (fail! "Kvist instant as-of before history was not empty"))
+        (when (not (= (query-name-count after "Grace") 1))
+          (fail! "Kvist instant as-of after history did not include the latest state"))
+        (when (not (= (query-name-count recent "Grace") 1))
+          (fail! "Kvist instant since did not use an exclusive boundary"))
+        (when (or (not (= (count from-second) 1))
+                  (not (= (count until-second) 1)))
+          (fail! "Kvist tx-range did not follow Datomic instant boundary semantics"))
+        (fmt.println "history-api Kvist instants: ok")))))

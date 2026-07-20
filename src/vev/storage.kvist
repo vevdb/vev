@@ -8283,6 +8283,7 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defenum Store-DB-Kind [
   Empty
   Resident
+  Filtered
   SQLite-Snapshot
   SQLite-Lazy-Snapshot
   SQLite-Root-Snapshot
@@ -8298,6 +8299,12 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defstruct Store-DB {
   kind: Store-DB-Kind
   resident: DB
+  filtered-base: ^Store-DB
+  filter-has-as-of: bool
+  filter-as-of-tx: u64
+  filter-has-since: bool
+  filter-since-tx: u64
+  filter-history: bool
   sqlite-snapshot: SQLite-DB-Snapshot
   sqlite-lazy-path: string
   sqlite-lazy-basis-tx: u64
@@ -12372,6 +12379,12 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (return (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: sqlite-snapshot}) true "")
       (return (Store-DB {}) false snapshot-error))))
 
+(defn sqlite-store-db-latest [store: ^SQLite-Conn] -> [snapshot: Store-DB, ok: bool, error: string]
+  (let [[sqlite-snapshot snapshot-ok snapshot-error] (sqlite-open-db-snapshot store^.path sqlite-db-source-default-page-size)]
+    (when snapshot-ok
+      (return (Store-DB {kind: .SQLite-Snapshot sqlite-snapshot: sqlite-snapshot}) true ""))
+    (return (Store-DB {}) false snapshot-error)))
+
 (defn sqlite-lazy-store-db-at-basis [path: string, basis-tx: u64] -> Store-DB
   (Store-DB {kind: .SQLite-Lazy-Snapshot
              sqlite-lazy-path: (string-owned path)
@@ -14048,11 +14061,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
               [segment-ok segment-error] (resolve-shared-source-tx-segment-source-only! state current-source (addr ops) (addr tx-meta) (addr tempids) (addr segment))]
           (when (not segment-ok)
             (return (failed-store-source-registered-tx snapshot^ ops tx-meta tempids segment segment-error)))
-          (let [call-source (tx-ops-overlay-db-read-source (addr source) (addr ops) tx)
-                [fn-index fn-ok] (tx-fn-source-string-index registry data.ident)]
+          (let [[fn-index fn-ok] (tx-fn-source-string-index registry data.ident)]
             (when (not fn-ok)
               (return (failed-store-source-registered-tx snapshot^ ops tx-meta tempids segment "transaction fn not registered")))
-            (let [result (call-source-registered-tx-fn registry[fn-index] call-source data)]
+            (let [result (call-source-registered-tx-fn registry[fn-index] source data)]
               (when (not result.ok)
                 (delete result.tx-data)
                 (return (failed-store-source-registered-tx snapshot^ ops tx-meta tempids segment result.error)))
@@ -14104,6 +14116,16 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
   (case snapshot.kind
     .Resident (Store-DB {kind: .Resident
                          resident: (clone-db snapshot.resident)})
+    .Filtered
+      (let [base (alloc Store-DB)]
+        (set! base^ (retain-store-db snapshot.filtered-base^))
+        (Store-DB {kind: .Filtered
+                   filtered-base: base
+                   filter-has-as-of: snapshot.filter-has-as-of
+                   filter-as-of-tx: snapshot.filter-as-of-tx
+                   filter-has-since: snapshot.filter-has-since
+                   filter-since-tx: snapshot.filter-since-tx
+                   filter-history: snapshot.filter-history}))
     .SQLite-Snapshot
       (let [[root-backed root-backed-ok] (sqlite-root-store-db-from-open-snapshot snapshot.sqlite-snapshot)]
         (if root-backed-ok
@@ -14309,6 +14331,16 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn store-db-read-source [snapshot: ^Store-DB] -> [source: DB-Read-Source, ok: bool, error: string]
   (case snapshot^.kind
     .Resident (return (resident-db-read-source (addr snapshot^.resident)) true "")
+    .Filtered
+      (let [[base-source base-ok base-error] (store-db-read-source snapshot^.filtered-base)]
+        (when (not base-ok)
+          (return base-source false base-error))
+        (set! base-source.filter-has-as-of snapshot^.filter-has-as-of)
+        (set! base-source.filter-as-of-tx snapshot^.filter-as-of-tx)
+        (set! base-source.filter-has-since snapshot^.filter-has-since)
+        (set! base-source.filter-since-tx snapshot^.filter-since-tx)
+        (set! base-source.filter-history snapshot^.filter-history)
+        (return base-source true ""))
     .SQLite-Snapshot (return (sqlite-db-read-source (addr snapshot^.sqlite-snapshot)) true "")
     .SQLite-Lazy-Snapshot
       (let [path (string-owned snapshot^.sqlite-lazy-path)
@@ -14536,6 +14568,30 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (with-tx-data db tx-data)))
 
 (defn with-store-db-report-tx-data [snapshot: ^Store-DB, tx-data: []Tx-Data] -> Store-Tx-Report
+  (when (= snapshot^.kind .Filtered)
+    (when snapshot^.filter-history
+      (return (failed-store-tx-report snapshot^ "history DB values cannot be used with transactions")))
+    (let [report (with-store-db-report-tx-data snapshot^.filtered-base tx-data)]
+      (when report.ok
+        (let [filtered-before (filtered-store-db
+                                (addr report.db-before)
+                                snapshot^.filter-has-as-of
+                                snapshot^.filter-as-of-tx
+                                snapshot^.filter-has-since
+                                snapshot^.filter-since-tx
+                                false)
+              filtered-after (filtered-store-db
+                               (addr report.db-after)
+                               snapshot^.filter-has-as-of
+                               snapshot^.filter-as-of-tx
+                               snapshot^.filter-has-since
+                               snapshot^.filter-since-tx
+                               false)]
+          (close-store-db report.db-before)
+          (close-store-db report.db-after)
+          (set! report.db-before filtered-before)
+          (set! report.db-after filtered-after)))
+      (return report)))
   (when (source-backed-store-db? snapshot)
     (let [[report used ok error] (with-store-db-source-overlay-report-tx-data snapshot tx-data)]
       (when ok
@@ -14653,7 +14709,8 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           out)))))
 
 (defn source-backed-store-db? [snapshot: ^Store-DB] -> bool
-  (or (= snapshot^.kind .Shared-Snapshot)
+  (or (= snapshot^.kind .Filtered)
+      (= snapshot^.kind .Shared-Snapshot)
       (= snapshot^.kind .SQLite-Snapshot)
       (= snapshot^.kind .SQLite-Lazy-Snapshot)
       (= snapshot^.kind .SQLite-Root-Snapshot)
@@ -14663,6 +14720,216 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
       (= snapshot^.kind .SQLite-Datom-Overlay)
       (= snapshot^.kind .Shared-Datom-Log-Overlay)
       (= snapshot^.kind .SQLite-Datom-Log-Overlay)))
+
+(defn filtered-store-db [snapshot: ^Store-DB, has-as-of: bool, as-of-tx: u64, has-since: bool, since-tx: u64, history: bool] -> Store-DB
+  (let [base (Store-DB {})
+        next-has-as-of has-as-of
+        next-as-of-tx as-of-tx
+        next-has-since has-since
+        next-since-tx since-tx
+        next-history history]
+    (if (= snapshot^.kind .Filtered)
+      (do
+        (set! base (retain-store-db snapshot^.filtered-base^))
+        (when snapshot^.filter-has-as-of
+          (if next-has-as-of
+            (set! next-as-of-tx (min next-as-of-tx snapshot^.filter-as-of-tx))
+            (do
+              (set! next-has-as-of true)
+              (set! next-as-of-tx snapshot^.filter-as-of-tx))))
+        (when snapshot^.filter-has-since
+          (if next-has-since
+            (set! next-since-tx (max next-since-tx snapshot^.filter-since-tx))
+            (do
+              (set! next-has-since true)
+              (set! next-since-tx snapshot^.filter-since-tx))))
+        (set! next-history (or next-history snapshot^.filter-history)))
+      (set! base (retain-store-db snapshot^)))
+    (let [base-ptr (alloc Store-DB)]
+      (set! base-ptr^ base)
+      (Store-DB {kind: .Filtered
+                 filtered-base: base-ptr
+                 filter-has-as-of: next-has-as-of
+                 filter-as-of-tx: next-as-of-tx
+                 filter-has-since: next-has-since
+                 filter-since-tx: next-since-tx
+                 filter-history: next-history}))))
+
+(defn store-db-time-point-tx [coordinate: u64] -> u64
+  ;; Match Datomic's acceptance of either a basis t or a transaction entity id.
+  (if (and (> coordinate 0) (< coordinate tx-partition-base))
+    (+ tx-partition-base (- coordinate 1))
+    coordinate))
+
+(defn store-db-tx-t [tx: u64] -> u64
+  (if (>= tx tx-partition-base)
+    (+ (- tx tx-partition-base) 1)
+    tx))
+
+(defn store-db-unfiltered [snapshot: ^Store-DB] -> ^Store-DB
+  (if (= snapshot^.kind .Filtered)
+    (store-db-unfiltered snapshot^.filtered-base)
+    snapshot))
+
+(defn store-db-basis-t [snapshot: ^Store-DB] -> [basis-t: u64, ok: bool, error: string]
+  ;; A filtered database retains the basis of the database from which it was
+  ;; derived. as-of-t and since-t describe the filter bounds separately.
+  (let [base (store-db-unfiltered snapshot)
+        [source source-ok source-error] (store-db-read-source base)]
+    (when (not source-ok)
+      (return 0 false source-error))
+    (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source ":db/txInstant")]
+      (when (not datoms-ok)
+        (return 0 false datoms-error))
+      (defer (delete-owned-datoms datoms))
+      (let [basis-tx (u64 0)]
+        (for [datom datoms]
+          (when (and datom.added
+                     (= datom.e datom.tx)
+                     (> datom.tx basis-tx))
+            (set! basis-tx datom.tx)))
+        (return (store-db-tx-t basis-tx) true "")))))
+
+(defn store-db-next-t [snapshot: ^Store-DB] -> [next-t: u64, ok: bool, error: string]
+  (let [[basis-t basis-ok basis-error] (store-db-basis-t snapshot)]
+    (if basis-ok
+      (return (+ basis-t 1) true "")
+      (return 0 false basis-error))))
+
+(defn store-db-as-of-t [snapshot: ^Store-DB] -> [as-of-t: u64, has-as-of: bool]
+  (if (and (= snapshot^.kind .Filtered) snapshot^.filter-has-as-of)
+    (return (store-db-tx-t snapshot^.filter-as-of-tx) true)
+    (return 0 false)))
+
+(defn store-db-since-t [snapshot: ^Store-DB] -> [since-t: u64, has-since: bool]
+  (if (and (= snapshot^.kind .Filtered) snapshot^.filter-has-since)
+    (return (store-db-tx-t snapshot^.filter-since-tx) true)
+    (return 0 false)))
+
+(defn store-db-history? [snapshot: ^Store-DB] -> bool
+  (and (= snapshot^.kind .Filtered) snapshot^.filter-history))
+
+(defn as-of-store-db [snapshot: ^Store-DB, tx: u64] -> Store-DB
+  (filtered-store-db snapshot true (store-db-time-point-tx tx) false 0 false))
+
+(defn since-store-db [snapshot: ^Store-DB, tx: u64] -> Store-DB
+  (filtered-store-db snapshot false 0 true (store-db-time-point-tx tx) false))
+
+(defn store-db-tx-at-or-before-instant [snapshot: ^Store-DB, unix-millis: i64] -> [tx: u64, ok: bool, error: string]
+  ;; Resolve against the unfiltered database. A time point describes the
+  ;; database timeline itself, not the datoms visible through another filter.
+  (let [base (if (= snapshot^.kind .Filtered)
+               snapshot^.filtered-base
+               snapshot)
+        [source source-ok source-error] (store-db-read-source base)]
+    (when (not source-ok)
+      (return 0 false source-error))
+    (let [[datoms datoms-ok datoms-error] (db-read-source-datoms-by-attr source ":db/txInstant")]
+      (when (not datoms-ok)
+        (return 0 false datoms-error))
+      (defer (delete-owned-datoms datoms))
+      (let [resolved-tx (u64 0)]
+        (for [datom datoms]
+          (when (and datom.added
+                     (= datom.e datom.tx)
+                     (= datom.v.kind .Instant)
+                     (<= datom.v.int-value unix-millis)
+                     (> datom.tx resolved-tx))
+            (set! resolved-tx datom.tx)))
+        (return resolved-tx true "")))))
+
+(defn as-of-store-db-instant [snapshot: ^Store-DB, unix-millis: i64] -> [db: Store-DB, ok: bool, error: string]
+  (let [[tx resolved-ok resolved-error] (store-db-tx-at-or-before-instant snapshot unix-millis)]
+    (if resolved-ok
+      (return (as-of-store-db snapshot tx) true "")
+      (return (Store-DB {}) false resolved-error))))
+
+(defn since-store-db-instant [snapshot: ^Store-DB, unix-millis: i64] -> [db: Store-DB, ok: bool, error: string]
+  (let [[tx resolved-ok resolved-error] (store-db-tx-at-or-before-instant snapshot unix-millis)]
+    (if resolved-ok
+      (return (since-store-db snapshot tx) true "")
+      (return (Store-DB {}) false resolved-error))))
+
+(defn as-of-store-db-instant-or-panic [snapshot: ^Store-DB, unix-millis: i64] -> Store-DB
+  (let [[db ok error] (as-of-store-db-instant snapshot unix-millis)]
+    (when (not ok)
+      (panic error))
+    db))
+
+(defn since-store-db-instant-or-panic [snapshot: ^Store-DB, unix-millis: i64] -> Store-DB
+  (let [[db ok error] (since-store-db-instant snapshot unix-millis)]
+    (when (not ok)
+      (panic error))
+    db))
+
+(defn history-store-db [snapshot: ^Store-DB] -> Store-DB
+  (filtered-store-db snapshot false 0 false 0 true))
+
+(defn store-db-tx-range-bound-valid? [bound: Value] -> bool
+  (or (= bound.kind .Nil)
+      (= bound.kind .Instant)
+      (and (= bound.kind .Int) (>= bound.int-value 0))
+      (= bound.kind .Entity)))
+
+(defn store-db-tx-range-bound-allows? [bound: Value, start?: bool, tx: u64, unix-millis: i64] -> bool
+  (case bound.kind
+    .Nil true
+    .Instant (if start?
+               (>= unix-millis bound.int-value)
+               (< unix-millis bound.int-value))
+    .Int
+      (let [bound-tx (store-db-time-point-tx (u64 bound.int-value))]
+        (if start? (>= tx bound-tx) (< tx bound-tx)))
+    .Entity
+      (let [bound-tx (store-db-time-point-tx bound.entity)]
+        (if start? (>= tx bound-tx) (< tx bound-tx)))
+    false))
+
+(defn store-db-log-datom-value [datom: Datom] -> Value
+  (value-vector
+    ([]Value [(value-entity datom.e)
+              (value-keyword (string-owned datom.a))
+              (value-owned datom.v)
+              (value-entity datom.tx)
+              (value-bool datom.added)])))
+
+(defn store-db-tx-range-value [snapshot: ^Store-DB, start: Value, end: Value] -> [value: Value, ok: bool, error: string]
+  (when (or (not (store-db-tx-range-bound-valid? start))
+            (not (store-db-tx-range-bound-valid? end)))
+    (return (value-vector-owned (make [dynamic]Value))
+            false
+            "transaction range bounds must be nil, a non-negative t or transaction id, or an instant"))
+  (let [base (store-db-unfiltered snapshot)
+        [source source-ok source-error] (store-db-read-source base)]
+    (when (not source-ok)
+      (return (value-vector-owned (make [dynamic]Value)) false source-error))
+    (let [[instants instants-ok instants-error] (db-read-source-datoms-by-attr source ":db/txInstant")]
+      (when (not instants-ok)
+        (return (value-vector-owned (make [dynamic]Value)) false instants-error))
+      (defer (delete-owned-datoms instants))
+      (let [[materialized materialized-ok materialized-error] (store-db-materialize-db base)]
+        (when (not materialized-ok)
+          (delete-owned-db materialized)
+          (return (value-vector-owned (make [dynamic]Value)) false materialized-error))
+        (defer (delete-owned-db materialized))
+        (let [transactions (make [dynamic]Value)]
+          (for [instant-datom instants]
+            (when (and instant-datom.added
+                       (= instant-datom.e instant-datom.tx)
+                       (= instant-datom.v.kind .Instant)
+                       (store-db-tx-range-bound-allows? start true instant-datom.tx instant-datom.v.int-value)
+                       (store-db-tx-range-bound-allows? end false instant-datom.tx instant-datom.v.int-value))
+              (let [tx-datoms (make [dynamic]Value)]
+                (for [datom materialized.datoms]
+                  (when (= datom.tx instant-datom.tx)
+                    (arr.push! tx-datoms (store-db-log-datom-value datom))))
+                (arr.push! transactions
+                  (value-map
+                    ([]Value [(value-keyword (string-owned ":t"))
+                              (value-int (i64 (store-db-tx-t instant-datom.tx)))
+                              (value-keyword (string-owned ":data"))
+                              (value-vector-owned tx-datoms)]))))))
+          (return (value-vector-owned transactions) true ""))))))
 
 (defn with-store-db-text [snapshot: ^Store-DB, text: string] -> Tx-Report
   (when (source-backed-store-db? snapshot)
@@ -14836,6 +15103,9 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
               ""))))
 
 (defn store-db-entity [snapshot: ^Store-DB, entity-id: u64] -> [entity: Store-Entity, ok: bool, error: string]
+  (when (and (= snapshot^.kind .Filtered)
+             snapshot^.filter-history)
+    (return (Store-Entity {}) false "history DB values do not support entity views"))
   (let [[source source-ok source-error] (store-db-read-source snapshot)]
     (when (not source-ok)
       (return (Store-Entity {}) false source-error))
@@ -14865,6 +15135,98 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
           (return (Store-Entity {db: (retain-store-db snapshot^) e: 0 found: false}) true "")
           (return (Store-Entity {}) false ident-error)))
       (store-db-entity snapshot entity-id))))
+
+(defn store-public-index-order [order: string] -> [value: Public-Index-Order, ok: bool]
+  (cond
+    (= order ":eavt") (return .EAVT true)
+    (= order ":aevt") (return .AEVT true)
+    (= order ":avet") (return .AVET true)
+    (= order ":vaet") (return .VAET true))
+  (return .EAVT false))
+
+(defn store-db-resolve-index-args [source: DB-Read-Source, args: []Index-Arg] -> [values: [dynamic]Value, ok: bool, error: string]
+  (let [out (make [dynamic]Value 0 (count args))]
+    (for [arg args]
+      (if arg.has-lookup-ref
+        (let [[entity entity-ok entity-error] (db-read-source-resolve-lookup-ref source arg.lookup-attr arg.lookup-value)]
+          (when (not entity-ok)
+            (delete out)
+            (return (make [dynamic]Value) false entity-error))
+          (arr.push! out (value-entity entity)))
+        (arr.push! out arg.value)))
+    (return out true "")))
+
+(defn store-db-index-datoms [snapshot: ^Store-DB, mode: int, order-text: string, args: []Index-Arg] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [[order order-ok] (store-public-index-order order-text)]
+    (when (not order-ok)
+      (return (make [dynamic]Datom) false "index must be :eavt, :aevt, :avet, or :vaet"))
+    (let [[source source-ok source-error] (store-db-read-source snapshot)]
+      (when (not source-ok)
+        (return (make [dynamic]Datom) false source-error))
+      (let [[values values-ok values-error] (store-db-resolve-index-args source args)]
+        (when (not values-ok)
+          (return (make [dynamic]Datom) false values-error))
+        (defer (delete values))
+        (let [all (make [dynamic]Datom)
+              [scan-ok scan-error] (db-read-source-append-index-datoms! (addr all) source order ([]Value []))]
+          (when (not scan-ok)
+            (delete-owned-datoms all)
+            (return (make [dynamic]Datom) false scan-error))
+          (defer (delete-owned-datoms all))
+          (let [indexes (sorted-datom-order-indexes (slice all 0) order)
+                out (make [dynamic]Datom)]
+            (defer (delete indexes))
+            (if (= mode 2)
+              (let [position (- (count indexes) 1)]
+                (while (>= position 0)
+                  (let [datom all[indexes[position]]
+                        compare (datom-index-compare-values datom order-text (slice values 0))]
+                    (when (<= compare 0)
+                      (arr.push! out (datom-owned datom))))
+                  (set! position (- position 1))))
+              (for [index indexes]
+                (let [datom all[index]
+                      compare (datom-index-compare-values datom order-text (slice values 0))
+                      include (if (= mode 1)
+                                (>= compare 0)
+                                (= compare 0))]
+                  (when include
+                    (arr.push! out (datom-owned datom))))))
+            (return out true "")))))))
+
+(defn store-db-index-range-datoms [snapshot: ^Store-DB, attr: string, start: Index-Arg, has-start: bool, end: Index-Arg, has-end: bool] -> [datoms: [dynamic]Datom, ok: bool, error: string]
+  (let [[source source-ok source-error] (store-db-read-source snapshot)]
+    (when (not source-ok)
+      (return (make [dynamic]Datom) false source-error))
+    (let [args (make [dynamic]Index-Arg)]
+      (defer (delete args))
+      (when has-start
+        (arr.push! args start))
+      (when has-end
+        (arr.push! args end))
+      (let [[values values-ok values-error] (store-db-resolve-index-args source (slice args 0))]
+        (when (not values-ok)
+          (return (make [dynamic]Datom) false values-error))
+        (defer (delete values))
+        (let [all (make [dynamic]Datom)
+              [scan-ok scan-error] (db-read-source-append-index-datoms! (addr all) source .AVET ([]Value [(value-keyword attr)]))]
+          (when (not scan-ok)
+            (delete-owned-datoms all)
+            (return (make [dynamic]Datom) false scan-error))
+          (defer (delete-owned-datoms all))
+          (let [indexes (sorted-datom-order-indexes (slice all 0) .AVET)
+                out (make [dynamic]Datom)]
+            (defer (delete indexes))
+            (for [index indexes]
+              (let [datom all[index]
+                    after-start (or (not has-start)
+                                    (>= (index-position-compare datom.v values[0]) 0))
+                    end-index (if has-start 1 0)
+                    before-end (or (not has-end)
+                                   (< (index-position-compare datom.v values[end-index]) 0))]
+                (when (and after-start before-end)
+                  (arr.push! out (datom-owned datom)))))
+            (return out true "")))))))
 
 (defn store-entity-id [entity: Store-Entity] -> u64
   entity.e)
@@ -14932,6 +15294,28 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
     (when value-ok
       (delete-owned-value value))
     value-ok))
+
+(defn store-entity-attr-flags [entity: ^Store-Entity, attr: string] -> [flags: int, ok: bool, error: string]
+  ;; Bit 0: ref, bit 1: cardinality-many, bit 2: component.
+  (when (reverse-attr? attr)
+    (return 3 true ""))
+  (let [[source source-ok source-error] (store-db-read-source (addr entity^.db))]
+    (when (not source-ok)
+      (return 0 false source-error))
+    (let [[ref ref-ok ref-error] (db-read-source-schema-ref? source attr)]
+      (when (not ref-ok)
+        (return 0 false ref-error))
+      (let [[many many-ok many-error] (db-read-source-schema-cardinality-many? source attr)]
+        (when (not many-ok)
+          (return 0 false many-error))
+        (let [[component component-ok component-error] (db-read-source-schema-component? source attr)]
+          (when (not component-ok)
+            (return 0 false component-error))
+          (return (+ (if ref 1 0)
+                     (if many 2 0)
+                     (if component 4 0))
+                  true
+                  ""))))))
 
 (defn store-entity-ref [entity: ^Store-Entity, attr: string] -> [ref: Store-Entity, ok: bool, error: string]
   (let [[value value-ok value-error] (store-entity-first-value entity attr)]
@@ -15127,6 +15511,10 @@ sqlite_load_tx_meta_rows_text_raw :: proc(path: string) -> (string, bool, string
 (defn close-store-db! [snapshot: ^Store-DB]
   (case snapshot^.kind
     .Resident (delete-owned-db snapshot^.resident)
+    .Filtered
+      (do
+        (close-store-db! snapshot^.filtered-base)
+        (free snapshot^.filtered-base))
     .SQLite-Snapshot (close-sqlite-db-snapshot! (addr snapshot^.sqlite-snapshot))
     .SQLite-Lazy-Snapshot (delete snapshot^.sqlite-lazy-path)
     .SQLite-Root-Snapshot

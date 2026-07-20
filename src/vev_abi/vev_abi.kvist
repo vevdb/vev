@@ -3499,6 +3499,23 @@ abi_free_stmt :: proc(stmt: rawptr) {
           (vev.delete-value-containers-shallow parsed)
           (return owned true ""))))))
 
+(defn- index-arg-from-value [value: vev.Value] -> vev.Index-Arg
+  (when (and (= value.kind .Vector)
+             (= (count value.items) 2)
+             (= value.items[0].kind .Keyword))
+    (return (vev.Index-Arg {has-lookup-ref: true
+                            lookup-attr: value.items[0].text
+                            lookup-value: value.items[1]})))
+  (vev.Index-Arg {value: value}))
+
+(defn- index-args-from-value [value: vev.Value] -> [args: [dynamic]vev.Index-Arg, ok: bool]
+  (when (not (= value.kind .Vector))
+    (return (make [dynamic]vev.Index-Arg) false))
+  (let [out (make [dynamic]vev.Index-Arg 0 (count value.items))]
+    (for [item value.items]
+      (arr.push! out (index-arg-from-value item)))
+    (return out true)))
+
 (defn- entity-handle-from-owned-entity [entity: vev.Store-Entity] -> Vev-Entity
   (Vev-Entity (abi-alloc-entity entity)))
 
@@ -4061,6 +4078,18 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (vev_sqlite_conn_db (connection-as-sqlite conn)))
 
 @export
+(defn vev_connection_latest_db :abi "c" [conn: Vev-Connection] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr conn) nil) (not (abi-sqlite-conn-ok (rawptr conn))))
+    (return (Vev-DB nil)))
+  (let [[snapshot snapshot-ok snapshot-error] (vev.sqlite-store-db-latest (sqlite-conn-ptr (connection-as-sqlite conn)))]
+    (if snapshot-ok
+      (Vev-DB (abi-alloc-db snapshot))
+      (if (= snapshot-error "sqlite DB has no Vev index roots")
+        (Vev-DB (abi-alloc-db (vev.empty-shared-store-db-for-sqlite-bootstrap)))
+        (Vev-DB nil)))))
+
+@export
 (defn vev_connection_query_edn_with_inputs :abi "c" [conn: Vev-Connection, query-text: cstring, inputs-text: cstring] -> cstring
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr conn) nil)
@@ -4318,6 +4347,127 @@ abi_free_stmt :: proc(stmt: rawptr) {
   (Vev-DB (abi-retain-db (rawptr db))))
 
 @export
+(defn vev_db_basis_t :abi "c" [db: Vev-DB] -> u64
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return 0))
+  (let [[basis-t ok _] (vev.store-db-basis-t (store-db-ptr db))]
+    (if ok basis-t 0)))
+
+@export
+(defn vev_db_next_t :abi "c" [db: Vev-DB] -> u64
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return 0))
+  (let [[next-t ok _] (vev.store-db-next-t (store-db-ptr db))]
+    (if ok next-t 0)))
+
+@export
+(defn vev_db_has_as_of_t :abi "c" [db: Vev-DB] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return false))
+  (let [[_ present] (vev.store-db-as-of-t (store-db-ptr db))]
+    present))
+
+@export
+(defn vev_db_as_of_t :abi "c" [db: Vev-DB] -> u64
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return 0))
+  (let [[value present] (vev.store-db-as-of-t (store-db-ptr db))]
+    (if present value 0)))
+
+@export
+(defn vev_db_has_since_t :abi "c" [db: Vev-DB] -> bool
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return false))
+  (let [[_ present] (vev.store-db-since-t (store-db-ptr db))]
+    present))
+
+@export
+(defn vev_db_since_t :abi "c" [db: Vev-DB] -> u64
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return 0))
+  (let [[value present] (vev.store-db-since-t (store-db-ptr db))]
+    (if present value 0)))
+
+@export
+(defn vev_db_is_history :abi "c" [db: Vev-DB] -> bool
+  (odin "context = runtime.default_context()")
+  (and (not (= (rawptr db) nil))
+       (vev.store-db-history? (store-db-ptr db))))
+
+@export
+(defn vev_db_as_of :abi "c" [db: Vev-DB, tx: u64] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return (Vev-DB nil)))
+  (Vev-DB (abi-alloc-db (vev.as-of-store-db (store-db-ptr db) tx))))
+
+@export
+(defn vev_db_as_of_instant_millis :abi "c" [db: Vev-DB, unix-millis: i64] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return (Vev-DB nil)))
+  (let [[filtered ok _] (vev.as-of-store-db-instant (store-db-ptr db) unix-millis)]
+    (when (not ok)
+      (return (Vev-DB nil)))
+    (Vev-DB (abi-alloc-db filtered))))
+
+@export
+(defn vev_db_since :abi "c" [db: Vev-DB, tx: u64] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return (Vev-DB nil)))
+  (Vev-DB (abi-alloc-db (vev.since-store-db (store-db-ptr db) tx))))
+
+@export
+(defn vev_db_since_instant_millis :abi "c" [db: Vev-DB, unix-millis: i64] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return (Vev-DB nil)))
+  (let [[filtered ok _] (vev.since-store-db-instant (store-db-ptr db) unix-millis)]
+    (when (not ok)
+      (return (Vev-DB nil)))
+    (Vev-DB (abi-alloc-db filtered))))
+
+@export
+(defn vev_db_history :abi "c" [db: Vev-DB] -> Vev-DB
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return (Vev-DB nil)))
+  (Vev-DB (abi-alloc-db (vev.history-store-db (store-db-ptr db)))))
+
+(defn- tx-range-bound-value [kind: int, raw-value: i64] -> [value: vev.Value, ok: bool]
+  (case kind
+    0 (return (vev.value-nil) true)
+    1
+      (if (>= raw-value 0)
+        (return (vev.value-int raw-value) true)
+        (return (vev.value-nil) false))
+    2 (return (vev.value-instant raw-value) true)
+    (return (vev.value-nil) false)))
+
+@export
+(defn vev_db_tx_range_value :abi "c" [db: Vev-DB, start-kind: int, start-value: i64, end-kind: int, end-value: i64] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return (Vev-Value-Handle nil)))
+  (let [[start start-ok] (tx-range-bound-value start-kind start-value)
+        [end end-ok] (tx-range-bound-value end-kind end-value)]
+    (when (not (and start-ok end-ok))
+      (return (Vev-Value-Handle nil)))
+    (let [[value ok _] (vev.store-db-tx-range-value (store-db-ptr db) start end)]
+      (if ok
+        (value-handle-from-owned-value value)
+        (do
+          (vev.delete-owned-value value)
+          (Vev-Value-Handle nil))))))
+
+@export
 (defn vev_with_edn :abi "c" [db: Vev-DB, tx-text: cstring] -> cstring
   (odin "context = runtime.default_context()")
   (when (or (= (rawptr db) nil) (= tx-text nil))
@@ -4405,6 +4555,72 @@ abi_free_stmt :: proc(stmt: rawptr) {
       (entity-handle-null))))
 
 @export
+(defn vev_db_datoms_value :abi "c" [db: Vev-DB, mode: int, order: cstring, components-edn: cstring] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= order nil) (= components-edn nil))
+    (return (Vev-Value-Handle nil)))
+  (let [order-text (text-from-c order)
+        components-text (text-from-c components-edn)
+        [components components-ok _] (value-from-edn-text components-text)]
+    (delete components-text)
+    (when (not components-ok)
+      (delete order-text)
+      (return (Vev-Value-Handle nil)))
+    (defer (vev.delete-owned-value components))
+    (let [[args args-ok] (index-args-from-value components)]
+      (when (not args-ok)
+        (delete args)
+        (delete order-text)
+        (return (Vev-Value-Handle nil)))
+      (defer (delete args))
+      (let [[datoms datoms-ok _] (vev.store-db-index-datoms (store-db-ptr db) mode order-text (slice args 0))]
+        (delete order-text)
+        (when (not datoms-ok)
+          (vev.delete-owned-datoms datoms)
+          (return (Vev-Value-Handle nil)))
+        (let [value (vev.datoms-value (slice datoms 0))]
+          (vev.delete-owned-datoms datoms)
+          (value-handle-from-owned-value value))))))
+
+@export
+(defn vev_db_index_range_value :abi "c" [db: Vev-DB, attr: cstring, start-edn: cstring, end-edn: cstring] -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr db) nil) (= attr nil) (= start-edn nil) (= end-edn nil))
+    (return (Vev-Value-Handle nil)))
+  (let [attr-text (text-from-c attr)
+        start-text (text-from-c start-edn)
+        end-text (text-from-c end-edn)
+        [start start-ok _] (value-from-edn-text start-text)
+        [end end-ok _] (value-from-edn-text end-text)]
+    (delete start-text)
+    (delete end-text)
+    (when (not (and start-ok end-ok))
+      (when start-ok
+        (vev.delete-owned-value start))
+      (when end-ok
+        (vev.delete-owned-value end))
+      (delete attr-text)
+      (return (Vev-Value-Handle nil)))
+    (defer (vev.delete-owned-value start))
+    (defer (vev.delete-owned-value end))
+    (let [has-start (not (= start.kind .Nil))
+          has-end (not (= end.kind .Nil))
+          [datoms datoms-ok _] (vev.store-db-index-range-datoms
+                                 (store-db-ptr db)
+                                 attr-text
+                                 (index-arg-from-value start)
+                                 has-start
+                                 (index-arg-from-value end)
+                                 has-end)]
+      (delete attr-text)
+      (when (not datoms-ok)
+        (vev.delete-owned-datoms datoms)
+        (return (Vev-Value-Handle nil)))
+      (let [value (vev.datoms-value (slice datoms 0))]
+        (vev.delete-owned-datoms datoms)
+        (value-handle-from-owned-value value)))))
+
+@export
 (defn vev_entity_free :abi "c" [entity: Vev-Entity]
   (odin "context = runtime.default_context()")
   (when (= (rawptr entity) nil)
@@ -4438,6 +4654,16 @@ abi_free_stmt :: proc(stmt: rawptr) {
         out (vev.store-entity-contains? (entity-ptr entity) attr-text)]
     (delete attr-text)
     out))
+
+@export
+(defn vev_entity_attr_flags :abi "c" [entity: Vev-Entity, attr: cstring] -> int
+  (odin "context = runtime.default_context()")
+  (when (or (= (rawptr entity) nil) (= attr nil))
+    (return 0))
+  (let [attr-text (text-from-c attr)
+        [flags flags-ok _] (vev.store-entity-attr-flags (entity-ptr entity) attr-text)]
+    (delete attr-text)
+    (if flags-ok flags 0)))
 
 @export
 (defn vev_entity_get :abi "c" [entity: Vev-Entity, attr: cstring] -> Vev-Value-Handle

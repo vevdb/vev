@@ -2,10 +2,12 @@
 ;; SPDX-License-Identifier: EPL-2.0
 
 (ns vev.core
+  (:refer-clojure :exclude [sync])
   (:require [clojure.edn :as edn]
             [clojure.set :as set])
   (:import [java.nio.file Path]
-           [com.vevdb Vev Vev$ColumnResult Vev$DB Vev$Entity Vev$EntityView Vev$Keyword Vev$MapValue Vev$PreparedPullPattern Vev$QueryAggregate Vev$QueryPredicate Vev$Symbol Vev$TxFunction Vev$TxReportListener]))
+           [java.util.function Function]
+           [com.vevdb Vev Vev$ColumnResult Vev$DB Vev$Datom Vev$Entity Vev$EntityView Vev$Keyword Vev$Log Vev$MapValue Vev$PreparedPullPattern Vev$QueryAggregate Vev$QueryPredicate Vev$Symbol Vev$TxReportListener]))
 
 (defn- path [value]
   (cond
@@ -22,9 +24,11 @@
     (binding [*print-namespace-maps* false]
       (pr-str value))))
 
+(declare query-input-value)
+
 (defn- inputs-text [inputs]
   (binding [*print-namespace-maps* false]
-    (pr-str (vec inputs))))
+    (pr-str (mapv query-input-value inputs))))
 
 (defn- load-engine
   ([]
@@ -144,7 +148,10 @@
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
 
-(defrecord Log [conn])
+(defrecord Log [^Vev engine ^Vev$Log native conn]
+  java.lang.AutoCloseable
+  (close [_]
+    (.close native)))
 
 (defrecord SQLiteConn [^Vev engine native]
   java.lang.AutoCloseable
@@ -156,18 +163,114 @@
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
 
-(declare entity-get)
+(declare entity-contains? entity-value entity-realized-map touch)
 
-(deftype EntityView [^Vev engine native]
+(deftype EntityView [^DB db ^Vev$EntityView native cache]
   java.lang.AutoCloseable
   (close [_]
     (.close ^java.lang.AutoCloseable native))
+  clojure.lang.Associative
+  (containsKey [this key]
+    (entity-contains? this key))
+  (entryAt [this key]
+    (when (entity-contains? this key)
+      (clojure.lang.MapEntry/create key (entity-value this key))))
+  (assoc [this key value]
+    (assoc (entity-realized-map this) key value))
   clojure.lang.ILookup
   (valAt [this key]
-    (entity-get this key))
+    (entity-value this key))
   (valAt [this key not-found]
-    (let [value (entity-get this key)]
-      (if (nil? value) not-found value))))
+    (if (entity-contains? this key)
+      (entity-value this key)
+      not-found))
+  clojure.lang.IPersistentCollection
+  (cons [this value]
+    (conj (entity-realized-map this) value))
+  (empty [_]
+    {})
+  (equiv [this other]
+    (= (entity-realized-map this) other))
+  clojure.lang.Counted
+  (count [this]
+    (count (entity-realized-map this)))
+  clojure.lang.IHashEq
+  (hasheq [this]
+    (clojure.lang.Util/hasheq (entity-realized-map this)))
+  clojure.lang.Seqable
+  (seq [this]
+    (seq (entity-realized-map this)))
+  Iterable
+  (iterator [this]
+    (.iterator ^Iterable (entity-realized-map this)))
+  Object
+  (equals [this other]
+    (= (entity-realized-map this) other))
+  (hashCode [this]
+    (hash (entity-realized-map this)))
+  (toString [this]
+    (str (entity-realized-map this))))
+
+(defn- datom-vector [datom]
+  [(.-e datom)
+   (.-a datom)
+   (.-v datom)
+   (.-tx datom)
+   (.-added datom)])
+
+(deftype Datom [e a v tx added]
+  clojure.lang.Associative
+  (containsKey [_ key]
+    (contains? #{:e :a :v :tx :added} key))
+  (entryAt [this key]
+    (when (contains? this key)
+      (clojure.lang.MapEntry/create key (get this key))))
+  (assoc [this key value]
+    (assoc {:e e :a a :v v :tx tx :added added} key value))
+  clojure.lang.ILookup
+  (valAt [_ key]
+    (case key
+      :e e
+      :a a
+      :v v
+      :tx tx
+      :added added
+      nil))
+  (valAt [this key not-found]
+    (if (contains? this key)
+      (get this key)
+      not-found))
+  clojure.lang.Indexed
+  (nth [this index]
+    (nth (datom-vector this) index))
+  (nth [this index not-found]
+    (nth (datom-vector this) index not-found))
+  clojure.lang.IPersistentCollection
+  (cons [this value]
+    (conj (datom-vector this) value))
+  (empty [_]
+    [])
+  (equiv [this other]
+    (= (datom-vector this) other))
+  clojure.lang.Counted
+  (count [_]
+    5)
+  clojure.lang.IHashEq
+  (hasheq [this]
+    (clojure.lang.Util/hasheq (datom-vector this)))
+  clojure.lang.Seqable
+  (seq [this]
+    (seq (datom-vector this)))
+  Iterable
+  (iterator [this]
+    (.iterator ^Iterable (datom-vector this)))
+  Object
+  (equals [this other]
+    (= (datom-vector this) other))
+  (hashCode [this]
+    (hash (datom-vector this)))
+  (toString [this]
+    (str (datom-vector this))))
 
 (defn retain-db
   "Return another owned handle to the same immutable DB value."
@@ -185,11 +288,6 @@
     (.close ^java.lang.AutoCloseable native)))
 
 (defrecord TxBuilder [^Vev engine native]
-  java.lang.AutoCloseable
-  (close [_]
-    (.close ^java.lang.AutoCloseable native)))
-
-(defrecord TxFnRegistry [^Vev engine native]
   java.lang.AutoCloseable
   (close [_]
     (.close ^java.lang.AutoCloseable native)))
@@ -224,7 +322,9 @@
          (.close engine)
          (throw error))))))
 
-(def open create-conn)
+(def open
+  "Compatibility alias for `create-conn`."
+  create-conn)
 
 (defn connect
   "Open a durable Vev connection.
@@ -248,10 +348,10 @@
          (throw error))))))
 
 (defn open-sqlite
-  "Open a durable SQLite-backed Vev connection.
+  "Open the legacy SQLite-specific Vev connection.
 
-  Prefer `connect` for application code; this backend-specific alias is for
-  storage tests and migration/debugging."
+  Prefer `connect` for application code. This compatibility entry point is
+  retained for storage migration, testing, and debugging."
   ([sqlite-path]
    (connect sqlite-path))
   ([lib-path sqlite-path]
@@ -273,6 +373,41 @@
     :else
     (throw (ex-info "expected Vev connection" {:source conn}))))
 
+(defn- db-future [conn native-future]
+  (.thenApply native-future
+              (reify Function
+                (apply [_ native-db]
+                  (->DB (:engine conn) native-db)))))
+
+(defn sync
+  "Return a future yielding a DB coordinated with other connections.
+
+  With no `t`, captures a DB containing every transaction complete when this
+  function was called. With `t`, completes once the connection can acquire a DB
+  whose basis t is at least `t`."
+  ([conn]
+   (cond
+     (instance? Conn conn)
+     (db-future conn (.sync (:native conn)))
+
+     (instance? DurableConn conn)
+     (db-future conn (.sync (:native conn)))
+
+     :else
+     (throw (ex-info "expected Vev connection" {:source conn}))))
+  ([conn t]
+   (when-not (and (integer? t) (not (neg? t)))
+     (throw (ex-info "sync t must be a non-negative integer" {:t t})))
+   (cond
+     (instance? Conn conn)
+     (db-future conn (.sync (:native conn) (long t)))
+
+     (instance? DurableConn conn)
+     (db-future conn (.sync (:native conn) (long t)))
+
+     :else
+     (throw (ex-info "expected Vev connection" {:source conn})))))
+
 (defn connection-info
   "Return storage metadata for a durable connection."
   [conn]
@@ -288,11 +423,20 @@
     (throw (ex-info "expected Vev durable connection" {:source conn}))))
 
 (defn log
-  "Return a Datomic-style transaction log value for a durable connection."
+  "Return a Datomic-style transaction log value for a connection."
   [conn]
-  (when-not (instance? DurableConn conn)
-    (throw (ex-info "expected Vev durable connection" {:source conn})))
-  (->Log conn))
+  (cond
+    (instance? Conn conn)
+    (->Log (:engine conn) (.log (:native conn)) conn)
+
+    (instance? DurableConn conn)
+    (->Log (:engine conn) (.log (:native conn)) conn)
+
+    (instance? SQLiteConn conn)
+    (->Log (:engine conn) (.log (:native conn)) conn)
+
+    :else
+    (throw (ex-info "expected Vev connection" {:source conn}))))
 
 (defn compact-indexes!
   "Compact durable index roots as an explicit maintenance operation."
@@ -313,72 +457,189 @@
   [^DB db]
   (->Conn (:engine db) (.connFromDb (:engine db) (:native db))))
 
+(defn- entity-view [db native]
+  (EntityView. db native (atom {})))
+
 (defn entity
-  "Create an entity id value, or a DB-backed entity view.
+  "Return a Datomic-style entity view over an immutable DB value.
 
-  `(entity id)` returns an explicit entity id value for typed native APIs.
-  `(entity db id)` returns a Datomic-style entity view over an immutable DB
-  value. The view can be used with keyword lookup and closed explicitly when a
-  caller wants prompt native release."
-  ([id]
-   (Vev$Entity. (long id)))
-  ([^DB db eid]
-   (let [native (cond
-                  (integer? eid)
-                  (.entity ^Vev$DB (:native db) (long eid))
+  `eid` may be an entity id, ident, or lookup ref. Entity attributes are loaded
+  lazily through keyword lookup. An unresolved ident or lookup ref returns nil;
+  a numeric id always returns an entity view whose `:db/id` is that id."
+  [^DB db eid]
+  (let [lookup? (not (integer? eid))
+        native (cond
+                 (integer? eid)
+                 (.entity ^Vev$DB (:native db) (long eid))
 
-                  (keyword? eid)
-                  (.entityIdent ^Vev$DB (:native db) (edn-text eid))
+                 (keyword? eid)
+                 (.entityIdent ^Vev$DB (:native db) (edn-text eid))
 
-                  (and (vector? eid)
-                       (= 2 (count eid))
-                       (keyword? (first eid))
-                       (string? (second eid)))
-                  (.entityLookupRefString ^Vev$DB (:native db)
-                                          (edn-text (first eid))
-                                          (second eid))
+                 (and (vector? eid)
+                      (= 2 (count eid))
+                      (keyword? (first eid))
+                      (string? (second eid)))
+                 (.entityLookupRefString ^Vev$DB (:native db)
+                                         (edn-text (first eid))
+                                         (second eid))
 
-                  :else
-                  (throw (ex-info "unsupported entity id"
-                                  {:eid eid
-                                   :supported #{:integer :ident-keyword :string-lookup-ref}})))]
-     (EntityView. (:engine db) native))))
+                 :else
+                 (throw (ex-info "unsupported entity id"
+                                 {:eid eid
+                                  :supported #{:integer :ident-keyword :string-lookup-ref}})))]
+    (if (and lookup? (not (.found ^Vev$EntityView native)))
+      (do
+        (.close ^Vev$EntityView native)
+        nil)
+      (entity-view db native))))
 
-(defn entity-found?
-  "Return true when a DB-backed entity view resolved to an entity."
+(defn entity-db
+  "Return the immutable DB value used to create an entity."
   [^EntityView entity-view]
-  (.found ^Vev$EntityView (.-native entity-view)))
+  (.-db entity-view))
 
-(defn entity-id
-  "Return the entity id for a DB-backed entity view."
+(defn entid
+  "Return the entity id associated with an ident, or an id itself if passed."
+  [^DB db ident]
+  (cond
+    (integer? ident) ident
+    (or (keyword? ident) (vector? ident))
+    (some-> (entity db ident) :db/id)
+    :else nil))
+
+(defn ident
+  "Return the keyword associated with an entity id, or a keyword itself."
+  [^DB db eid]
+  (if (keyword? eid)
+    eid
+    (:db/ident (entity db eid))))
+
+(defn- native-index-value [value]
+  (cond
+    (keyword? value) (Vev$Keyword. (str value))
+    (vector? value) (mapv native-index-value value)
+    (set? value) (set (map native-index-value value))
+    (map? value) (into {} (map (fn [[key item]]
+                                 [(native-index-value key)
+                                  (native-index-value item)])
+                               value))
+    :else value))
+
+(defn- datom-from-map [value]
+  (if (instance? Vev$Datom value)
+    (Datom. (.e ^Vev$Datom value)
+            (clj-value (.a ^Vev$Datom value))
+            (clj-value (.v ^Vev$Datom value))
+            (.tx ^Vev$Datom value)
+            (.added ^Vev$Datom value))
+    (Datom. (:e value)
+            (:a value)
+            (:v value)
+            (:tx value)
+            (:added value))))
+
+(defn- index-datoms [^DB db operation index components]
+  (let [native-db ^Vev$DB (:native db)
+        native-index (native-index-value index)
+        native-components (object-array (map native-index-value components))
+        values (case operation
+                 :datoms (.datoms native-db native-index native-components)
+                 :seek-datoms (.seekDatoms native-db native-index native-components)
+                 :rseek-datoms (.rseekDatoms native-db native-index native-components))]
+    (mapv datom-from-map values)))
+
+(defn datoms
+  "Return datoms matching leading components of an index."
+  [db index & components]
+  (index-datoms db :datoms index components))
+
+(defn seek-datoms
+  "Return datoms at or after components in an index."
+  [db index & components]
+  (index-datoms db :seek-datoms index components))
+
+(defn rseek-datoms
+  "Return datoms at or before components in reverse index order."
+  [db index & components]
+  (index-datoms db :rseek-datoms index components))
+
+(defn index-range
+  "Return AVET datoms for attr from start inclusive to end exclusive."
+  [^DB db attr start end]
+  (let [values (.indexRange ^Vev$DB
+                            (:native db)
+                            (native-index-value attr)
+                            (native-index-value start)
+                            (native-index-value end))]
+    (mapv datom-from-map values)))
+
+(defn- entity-contains?
+  [^EntityView entity-view attr]
+  (or (= :db/id attr)
+      (and (keyword? attr)
+           (.contains ^Vev$EntityView
+                      (.-native entity-view)
+                      (edn-text attr)))))
+
+(defn- entity-ref-value [^DB db value]
+  (if (instance? Vev$Entity value)
+    (entity db (.id ^Vev$Entity value))
+    (clj-value value)))
+
+(defn- entity-value
+  [^EntityView entity-view attr]
+  (if (= :db/id attr)
+    (.id ^Vev$EntityView (.-native entity-view))
+    (when (keyword? attr)
+      (let [cache (.-cache entity-view)]
+        (if (contains? @cache attr)
+          (get @cache attr)
+          (when (entity-contains? entity-view attr)
+            (let [native (.-native entity-view)
+                  attr-text (edn-text attr)
+                  flags (.attrFlags ^Vev$EntityView native attr-text)
+                  ref? (bit-test flags 0)
+                  many? (bit-test flags 1)
+                  raw-values (.values ^Vev$EntityView native attr-text)
+                  values (map #(if ref?
+                                 (entity-ref-value (.-db entity-view) %)
+                                 (clj-value %))
+                              raw-values)
+                  value (if many?
+                          (set values)
+                          (first values))]
+              (swap! cache assoc attr value)
+              value)))))))
+
+(defn- entity-realized-map
   [^EntityView entity-view]
-  (.id ^Vev$EntityView (.-native entity-view)))
-
-(defn entity-get
-  "Read the first value for attr from a DB-backed entity view."
-  [^EntityView entity-view attr]
-  (clj-value (.get ^Vev$EntityView (.-native entity-view) (edn-text attr))))
-
-(defn entity-values
-  "Read all values for attr from a DB-backed entity view."
-  [^EntityView entity-view attr]
-  (vec (clj-value (.values ^Vev$EntityView (.-native entity-view) (edn-text attr)))))
-
-(defn entity-ref
-  "Read the first ref attr as another DB-backed entity view."
-  [^EntityView entity-view attr]
-  (EntityView. (.-engine entity-view)
-               (.ref ^Vev$EntityView (.-native entity-view) (edn-text attr))))
-
-(defn entity-refs
-  "Read all ref attr values as entity ids."
-  [^EntityView entity-view attr]
-  (vec (.refs ^Vev$EntityView (.-native entity-view) (edn-text attr))))
+  (let [attrs (->> (.touch ^Vev$EntityView (.-native entity-view))
+                   clj-value
+                   keys
+                   (remove #{:db/id}))]
+    (persistent!
+     (reduce (fn [out attr]
+               (assoc! out attr (entity-value entity-view attr)))
+             (transient {})
+             attrs))))
 
 (defn touch
-  "Return a realized map for a DB-backed entity view."
+  "Eagerly realize an entity's attributes and recursively realize components.
+
+  Returns the same entity value."
   [^EntityView entity-view]
-  (clj-value (.touch ^Vev$EntityView (.-native entity-view))))
+  (doseq [[attr value] (entity-realized-map entity-view)
+          :when (bit-test (.attrFlags ^Vev$EntityView
+                                     (.-native entity-view)
+                                     (edn-text attr))
+                          2)]
+    (if (set? value)
+      (doseq [component value]
+        (when (instance? EntityView component)
+          (touch component)))
+      (when (instance? EntityView value)
+        (touch value))))
+  entity-view)
 
 (defn- source-engine [source]
   (or (:engine source)
@@ -396,23 +657,11 @@
   "Transact Clojure data or EDN text against a connection.
 
   Returns a Clojure transaction report map."
-  ([conn tx]
-   (with-open [report (if (instance? TxBuilder tx)
-                        (.transactReport (:native conn) (:native tx))
-                        (.transactReport (:native conn) (edn-text tx)))]
-     (clj-value (.value report))))
-  ([conn tx tx-fns]
-   (when (instance? TxBuilder tx)
-     (throw (ex-info "transaction function registries apply to EDN tx data, not TxBuilder values"
-                     {:tx tx})))
-   (when-not (or (instance? Conn conn)
-                 (instance? DurableConn conn))
-     (throw (ex-info "transaction function registries require a Vev connection"
-                     {:conn conn})))
-   (with-open [report (.transactReport (:native conn)
-                                       (edn-text tx)
-                                       (:native tx-fns))]
-     (clj-value (.value report)))))
+  [conn tx]
+  (with-open [report (if (instance? TxBuilder tx)
+                       (.transactReport (:native conn) (:native tx))
+                       (.transactReport (:native conn) (edn-text tx)))]
+    (clj-value (.value report))))
 
 (def transact! transact)
 
@@ -542,26 +791,18 @@
 
 (defn with
   "Apply tx data to an immutable DB and return a transaction report map."
-  ([^DB db tx]
-   (with-open [report (.withReport (:native db) (edn-text tx))]
-     (clj-value (.value report))))
-  ([^DB db tx tx-fns]
-   (with-open [report (.withReport (:native db) (edn-text tx) (:native tx-fns))]
-     (clj-value (.value report)))))
+  [^DB db tx]
+  (with-open [report (.withReport (:native db) (edn-text tx))]
+    (clj-value (.value report))))
 
 (defn with-report
   "Apply tx data to an immutable DB and return a transaction report map with
   owned `:db-before` and `:db-after` DB values."
-  ([^DB db tx]
-   (with-open [report (.withReport (:native db) (edn-text tx))]
-     (assoc (clj-value (.value report))
-            :db-before (->DB (:engine db) (.dbBefore report))
-            :db-after (->DB (:engine db) (.dbAfter report)))))
-  ([^DB db tx tx-fns]
-   (with-open [report (.withReport (:native db) (edn-text tx) (:native tx-fns))]
-     (assoc (clj-value (.value report))
-            :db-before (->DB (:engine db) (.dbBefore report))
-            :db-after (->DB (:engine db) (.dbAfter report))))))
+  [^DB db tx]
+  (with-open [report (.withReport (:native db) (edn-text tx))]
+    (assoc (clj-value (.value report))
+           :db-before (->DB (:engine db) (.dbBefore report))
+           :db-after (->DB (:engine db) (.dbAfter report)))))
 
 (defn db-with
   "Apply tx data to an immutable DB and return the resulting immutable DB value."
@@ -570,6 +811,106 @@
     (->DB (:engine db) (.dbWith (:native db) (:native tx)))
     (->DB (:engine db) (.dbWith (:native db) (edn-text tx)))))
 
+(defn as-of
+  "Return a DB value containing facts in effect at `time-point`, inclusive.
+  The time point may be a transaction coordinate, java.util.Date, or
+  java.time.Instant."
+  [^DB db time-point]
+  (->DB (:engine db)
+        (cond
+          (instance? java.util.Date time-point)
+          (.asOf (:native db) ^java.util.Date time-point)
+
+          (instance? java.time.Instant time-point)
+          (.asOf (:native db) ^java.time.Instant time-point)
+
+          (and (integer? time-point) (not (neg? time-point)))
+          (.asOf (:native db) (long time-point))
+
+          :else
+          (throw (ex-info "as-of time point must be a non-negative integer transaction coordinate, java.util.Date, or java.time.Instant"
+                          {:time-point time-point})))))
+
+(defn since
+  "Return a DB value containing facts asserted after `time-point`, exclusive.
+  The time point may be a transaction coordinate, java.util.Date, or
+  java.time.Instant."
+  [^DB db time-point]
+  (->DB (:engine db)
+        (cond
+          (instance? java.util.Date time-point)
+          (.since (:native db) ^java.util.Date time-point)
+
+          (instance? java.time.Instant time-point)
+          (.since (:native db) ^java.time.Instant time-point)
+
+          (and (integer? time-point) (not (neg? time-point)))
+          (.since (:native db) (long time-point))
+
+          :else
+          (throw (ex-info "since time point must be a non-negative integer transaction coordinate, java.util.Date, or java.time.Instant"
+                          {:time-point time-point})))))
+
+(defn history
+  "Return a history DB containing assertions and retractions across time."
+  [^DB db]
+  (->DB (:engine db) (.history (:native db))))
+
+(defn basis-t
+  "Return the latest transaction t reachable from this immutable DB value."
+  [^DB db]
+  (.basisT (:native db)))
+
+(defn next-t
+  "Return the t that would follow this DB value's basis."
+  [^DB db]
+  (.nextT (:native db)))
+
+(defn as-of-t
+  "Return the normalized as-of t for a filtered DB, or nil."
+  [^DB db]
+  (.asOfT (:native db)))
+
+(defn since-t
+  "Return the normalized since t for a filtered DB, or nil."
+  [^DB db]
+  (.sinceT (:native db)))
+
+(defn history?
+  "Return true when db is a history database value."
+  [^DB db]
+  (.isHistory (:native db)))
+
+(defn tx-range
+  "Return transaction maps from log between start (inclusive) and end
+  (exclusive). Bounds may be nil, t values, transaction ids, java.util.Date,
+  or java.time.Instant."
+  [^Log log-value start end]
+  (clj-value (.txRange (:native log-value) start end)))
+
+(defn t->tx
+  "Return the transaction entity id associated with a Vev basis t."
+  [t]
+  (when-not (and (integer? t) (not (neg? t)))
+    (throw (ex-info "t must be a non-negative integer" {:t t})))
+  (if (zero? t)
+    0
+    (+ 4611686018427387904 (dec (long t)))))
+
+(defn tx->t
+  "Return the basis t associated with a Vev transaction entity id."
+  [tx]
+  (when-not (and (integer? tx) (not (neg? tx)))
+    (throw (ex-info "transaction id must be a non-negative integer" {:tx tx})))
+  (if (>= tx 4611686018427387904)
+    (inc (- (long tx) 4611686018427387904))
+    (long tx)))
+
+(defn- query-input-value [value]
+  (if (instance? Log value)
+    (tx-range value nil nil)
+    value))
+
 (defn tx-builder
   "Create a native transaction builder for direct typed bulk tx construction."
   ([source]
@@ -577,37 +918,6 @@
   ([source capacity]
    (let [engine (:engine source)]
      (->TxBuilder engine (.txBuilder engine (int capacity))))))
-
-(defn register-tx-fn
-  "Register a Datomic-shaped transaction function in a registry.
-
-  The callback receives `(db & args)` and returns ordinary tx-data."
-  [^TxFnRegistry registry ident f]
-  (let [engine (:engine registry)
-        native-fn (reify Vev$TxFunction
-                    (apply [_ native-db args]
-                      (edn-text
-                       (apply f
-                              (->DB engine native-db)
-                              (mapv clj-value args)))))]
-    (.register (:native registry) (edn-text ident) native-fn)
-    registry))
-
-(defn tx-fns
-  "Create a transaction function registry from `{ident fn}`.
-
-  Registered functions can be called from tx-data with Datomic-style ident
-  shorthand or `:db.fn/call` and passed to `transact` / `with`."
-  [source registry]
-  (let [engine (source-engine source)
-        out (->TxFnRegistry engine (.txFunctionRegistry engine))]
-    (try
-      (doseq [[ident f] registry]
-        (register-tx-fn out ident f))
-      out
-      (catch Throwable error
-        (.close out)
-        (throw error)))))
 
 (defn- attr-text [attr]
   (cond

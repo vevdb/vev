@@ -64,7 +64,7 @@ The POMs must carry name, description, project URL, license, developer, and SCM
 metadata. `vev-clj` must declare an ordinary compile dependency on the exact
 same version of `com.vevdb:vev-java`.
 
-## First publication
+## Publishing a version
 
 1. Merge and tag the coordinated version in `vev`, `vev-java`, and `vev-clj`.
    Use a new version: Maven Central artifacts are immutable.
@@ -114,17 +114,21 @@ same version of `com.vevdb:vev-java`.
      "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID"
    ```
 
-7. When the state is `VALIDATED`, resolve both artifacts through Central's
-   deployment-testing Maven endpoint into a fresh cache. Run the Java and
-   Clojure durable open/write/reopen acceptance tests with `VEV_LIB` unset.
-8. Publish the validated deployment in the Portal UI. Keep the first release
-   user-managed; automatic publication can be enabled after the process has
-   proved reliable.
-9. Wait for the state `PUBLISHED`, then resolve both coordinates anonymously
-   from `https://repo1.maven.org/maven2/` into another empty cache.
+7. Run **Verify or publish Maven Central deployment** with the version and
+   `publish` enabled. The deployment UUID is optional: when omitted, the
+   workflow resolves the newest exact `VevDB-VERSION` user-managed deployment
+   through Central's authenticated deployment-list API.
+8. The workflow waits for `VALIDATED`, downloads the signed staged artifacts,
+   validates them, and runs fresh Java and Clojure consumers with `VEV_LIB`
+   unset before requesting publication.
+9. The workflow then waits for `PUBLISHED` and resolves both coordinates
+   anonymously from `https://repo1.maven.org/maven2/` into another empty cache.
+   Supplying `publish: false` stops safely after staged consumer validation.
 
-The recommended first publication under `com.vevdb` is `0.2.0-rc.2`, followed
-by `0.2.0` after consumer validation.
+`0.2.0-rc.2` was the first publication under `com.vevdb`; `0.2.0-rc.3` is the
+current public prerelease. Maven Central artifacts are immutable, so every
+subsequent deployment must use a new coordinated version. Promote a release
+candidate to `0.2.0` only after its public artifacts pass consumer validation.
 
 ## Official references
 

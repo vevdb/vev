@@ -84,6 +84,10 @@ with vevdb.prepare_pull_pattern("[:user/name]") as pattern:
     many = db.pull_many(pattern, [vevdb.Entity(1), vevdb.Entity(2)])
 ```
 
+`open_memory()` remains as a compatibility alias for `create_conn()`.
+`open_sqlite()` is retained for storage migration and debugging; application
+code should use the storage-neutral `connect()` API.
+
 DB snapshots can also produce entity views. The view is tied to the immutable
 DB value, not the live connection:
 
@@ -97,8 +101,6 @@ with conn.db() as db:
     with db.entity_lookup_ref(":user/email", "ada@example.com") as ada:
         print(ada.id)
 ```
-
-`open_memory()` remains as a compatibility alias for `create_conn()`.
 
 The current API already wraps native handles with context managers for
 connections, DB snapshots, entity views, prepared queries, prepared pull patterns,

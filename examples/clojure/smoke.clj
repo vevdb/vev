@@ -94,35 +94,27 @@
       (vev/transact conn
                     [[:db/add 100 :db/ident :user/friend]
                      [:db/add 100 :db/valueType :db.type/ref]
+                     [:db/add 102 :db/ident :user/tags]
+                     [:db/add 102 :db/cardinality :db.cardinality/many]
                      [:db/add 1 :user/friend 2]])
 
-      (let [db (vev/db conn)]
-        (with-open [ada (vev/entity db 1)
-                    friend (vev/entity-ref ada :user/friend)
-                    lookup (vev/entity db [:user/email "ada@example.com"])]
-          (when-not (and (vev/entity-found? ada)
-                         (= 1 (vev/entity-id ada))
-                         (= "Ada" (:user/name ada))
-                         (= ["Ada"] (vev/entity-values ada :user/name))
-                         (= 2 (vev/entity-id friend))
-                         (= "Grace" (:user/name friend))
-                         (= [2] (vev/entity-refs ada :user/friend))
-                         (= 1 (vev/entity-id lookup))
-                         (= "Ada" (:user/name (vev/touch ada))))
-            (throw (ex-info "unexpected entity view output"
-                            {:entity (vev/touch ada)})))))
+      (vev/transact conn [[:db/add 1 :user/tags "pioneer"]])
 
-      (with-open [fns (vev/tx-fns conn {:user/set-name
-                                        (fn [db e name]
-                                          [[:db/add e :user/nickname name]])})]
-        (vev/transact conn [[:db/add 101 :db/ident :user/set-name]])
-        (let [tx-fn-report (vev/transact conn [[:user/set-name 6 "Edsger"]] fns)]
-          (when-not (:ok tx-fn-report)
-            (throw (ex-info "transaction function failed" {:report tx-fn-report})))
-          (when-not (= #{["Edsger"]}
-                       (vev/q '[:find ?name :where [6 :user/nickname ?name]]
-                              (vev/db conn)))
-            (throw (ex-info "transaction function did not apply tx-data" {})))))
+      (let [db (vev/db conn)
+            ada (vev/entity db 1)
+            friend (:user/friend ada)
+            lookup (vev/entity db [:user/email "ada@example.com"])]
+        (when-not (and (= 1 (:db/id ada))
+                       (= "Ada" (:user/name ada))
+                       (= #{"pioneer"} (:user/tags ada))
+                       (= 2 (:db/id friend))
+                       (= "Grace" (:user/name friend))
+                       (= 1 (:db/id lookup))
+                       (identical? db (vev/entity-db ada))
+                       (identical? ada (vev/touch ada))
+                       (= "Ada" (:user/name ada)))
+          (throw (ex-info "unexpected entity view output"
+                          {:entity (into {} ada)}))))
 
       (with-open [email-query (vev/prepare conn
                                            '[:find ?e ?email

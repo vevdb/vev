@@ -38,8 +38,7 @@ The canonical repository is:
 https://github.com/vevdb/vev
 ```
 
-That should drive public package coordinates once VevDB moves beyond local smoke
-clients:
+It drives the published and planned package identities:
 
 - Clojure deps coordinate: `com.vevdb/vev-clj`
 - Java/Maven coordinate: `com.vevdb:vev-java`
@@ -94,7 +93,7 @@ can be tested from outside the repo before publication:
 
 ```clojure
 {:mvn/local-repo "/path/to/vev/build/m2"
- :deps {com.vevdb/vev-clj {:mvn/version "0.2.0-rc.2"}}}
+ :deps {com.vevdb/vev-clj {:mvn/version "0.2.0-rc.3"}}}
 ```
 
 For Java, the matching Maven dependency is `com.vevdb:vev-java`. Both
@@ -122,8 +121,9 @@ bundled-native package layout.
 The Go path is a cgo package at `github.com/vevdb/vev/clients/go`. Its public
 constructor shape is `vev.CreateConn()` for in-memory work and
 `vev.Connect("app.vev")` for durable stores; `OpenMemory()` remains a
-compatibility alias. `scripts/smoke_go_package.sh` verifies import from a
-separate temporary Go module using a local `replace`.
+compatibility alias.
+`scripts/smoke_go_package.sh` verifies import from a separate temporary Go
+module using a local `replace`.
 
 The Rust path is a local Cargo package under `clients/rust`, already named
 `vevdb` with `publish = false`. It is still a smoke binary plus RAII wrapper in
@@ -255,10 +255,10 @@ The implementation lives in `src/vev_abi` with the public header in
 - free returned strings and handles
 
 Java exposes the raw transaction-function callback path as
-`TxFunctionRegistry`; Clojure wraps it as `tx-fns`, where callbacks return
-ordinary Clojure tx-data. See `docs/c-abi.md`, `clients/c/smoke.c`, and the
-Python/Rust/Java/Clojure smoke examples, plus the Go and Node/TypeScript smoke
-examples.
+`TxFunctionRegistry`. This is a low-level host extension, not Datomic stored
+functions, and is intentionally absent from the Datomic-shaped `vev.core`
+namespace. See `docs/c-abi.md`, `clients/c/smoke.c`, and the Python/Rust/Java
+smoke examples, plus the Go and Node/TypeScript smoke examples.
 
 ## Clojure/JVM
 

@@ -336,6 +336,53 @@ static int run_sqlite_smoke(vev_prepared_query_t all_emails) {
     }
     vev_result_free(result);
     result = NULL;
+    vev_db_t as_of_db = vev_db_as_of(db, 0);
+    vev_db_t since_db = vev_db_since(db, 0);
+    vev_db_t as_of_instant_db = vev_db_as_of_instant_millis(db, 0);
+    vev_db_t since_instant_db = vev_db_since_instant_millis(db, 0);
+    vev_db_t history_db = vev_db_history(db);
+    if (as_of_db == NULL || since_db == NULL ||
+        as_of_instant_db == NULL || since_instant_db == NULL ||
+        history_db == NULL) {
+        fprintf(stderr, "failed to create filtered DB values\n");
+        if (as_of_db != NULL) vev_db_release(as_of_db);
+        if (since_db != NULL) vev_db_release(since_db);
+        if (as_of_instant_db != NULL) vev_db_release(as_of_instant_db);
+        if (since_instant_db != NULL) vev_db_release(since_instant_db);
+        if (history_db != NULL) vev_db_release(history_db);
+        goto cleanup;
+    }
+    if (vev_db_basis_t(db) != 0 || vev_db_next_t(db) != 1 ||
+        vev_db_has_as_of_t(db) || vev_db_has_since_t(db) ||
+        vev_db_is_history(db) ||
+        !vev_db_has_as_of_t(as_of_db) || vev_db_as_of_t(as_of_db) != 0 ||
+        !vev_db_has_since_t(since_db) || vev_db_since_t(since_db) != 0 ||
+        !vev_db_is_history(history_db)) {
+        fprintf(stderr, "unexpected immutable DB metadata\n");
+        vev_db_release(as_of_db);
+        vev_db_release(since_db);
+        vev_db_release(as_of_instant_db);
+        vev_db_release(since_instant_db);
+        vev_db_release(history_db);
+        goto cleanup;
+    }
+    vev_value_handle_t empty_range =
+        vev_db_tx_range_value(db, 0, 0, 0, 0);
+    if (empty_range == NULL) {
+        fprintf(stderr, "failed to read empty transaction range\n");
+        vev_db_release(as_of_db);
+        vev_db_release(since_db);
+        vev_db_release(as_of_instant_db);
+        vev_db_release(since_instant_db);
+        vev_db_release(history_db);
+        goto cleanup;
+    }
+    vev_value_handle_free(empty_range);
+    vev_db_release(as_of_db);
+    vev_db_release(since_db);
+    vev_db_release(as_of_instant_db);
+    vev_db_release(since_instant_db);
+    vev_db_release(history_db);
     vev_db_release(db);
     db = NULL;
 

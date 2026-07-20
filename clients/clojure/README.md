@@ -14,7 +14,7 @@ Java wrapper, whose combined release contains the verified platform native
 libraries:
 
 ```clojure
-{:deps {com.vevdb/vev-clj {:mvn/version "0.2.0-rc.2"}}}
+{:deps {com.vevdb/vev-clj {:mvn/version "0.2.0-rc.3"}}}
 ```
 
 The source repository can instead be consumed through a Git coordinate:
@@ -74,6 +74,56 @@ Durable usage should be similarly direct:
 (d/q '[:find ?name :where [?e :user/name ?name]] (d/db conn))
 ```
 
+Historical database filters use the Datomic names, argument order, and
+inclusive/exclusive boundaries. `#inst` is a `java.util.Date`, so the same form
+works with Datomic Peer and Vev:
+
+```clojure
+(def current (d/db conn))
+(d/as-of current tx) ; inclusive
+(d/as-of current #inst "2026-07-20T10:15:00.000Z")
+(d/since current #inst "2026-07-20T10:15:00.000Z") ; exclusive
+(d/history current)
+
+;; Metadata on immutable DB values
+(d/basis-t current)
+(d/next-t current)
+(d/as-of-t (d/as-of current tx))
+(d/since-t (d/since current tx))
+(d/history? (d/history current))
+
+;; Datomic log shape: start inclusive, end exclusive
+(d/tx-range (d/log conn) nil nil)
+(d/tx-range (d/log conn) tx-start tx-end)
+(d/tx-range (d/log conn) #inst "2026-07-20" #inst "2026-07-21")
+
+;; Transaction coordinate conversion
+(d/t->tx (d/basis-t current))
+(d/tx->t tx)
+
+;; The log is an ordinary query input
+(d/q
+  '[:find [?tx ...]
+    :in $ ?log ?start ?end
+    :where [(tx-ids ?log ?start ?end) [?tx ...]]]
+  current
+  (d/log conn)
+  nil
+  nil)
+
+(d/q
+  '[:find ?e ?a ?v ?added
+    :in $ ?log ?tx
+    :where [(tx-data ?log ?tx) [[?e ?a ?v _ ?added]]]]
+  current
+  (d/log conn)
+  tx)
+```
+
+`java.time.Instant` is also accepted by Vev. See
+[the history guide](../../docs/history.md) and its executable side-by-side
+Datomic comparison.
+
 For bulk host writes, `tx-builder` can be passed to the same `d/transact`
 function on either in-memory or durable connections:
 
@@ -122,7 +172,7 @@ That local repository can be consumed from a separate test project:
 
 ```clojure
 {:mvn/local-repo "/path/to/vev/build/m2"
- :deps {com.vevdb/vev-clj {:mvn/version "0.2.0-rc.2"}}
+ :deps {com.vevdb/vev-clj {:mvn/version "0.2.0-rc.3"}}
  :aliases {:run {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
 ```
 
@@ -237,8 +287,9 @@ view sees:
 (let [db (d/db conn)
       ada (d/entity db 1)]
   (:user/name ada)
-  (d/entity-values ada :user/email)
-  (d/entity-ref ada :user/friend)
+  (:user/email ada)
+  (:user/name (:user/friend ada))
+  (d/entity-db ada)
   (d/touch ada))
 ```
 
@@ -249,23 +300,35 @@ Lookup refs and idents are supported through the same function:
 (d/entity db :user/ada)
 ```
 
-Transaction functions follow Datomic's installed-ident model: the DB contains
-the function ident, while the host registry supplies the executable callback for
-this process.
+Identity and raw index access use the Datomic names and argument order:
 
 ```clojure
-(with-open [fns (d/tx-fns conn
-                  {:user/set-name
-                   (fn [db e name]
-                     [[:db/add e :user/name name]])})]
-  (d/transact conn [[:db/add 100 :db/ident :user/set-name]])
-  (d/transact conn [[:user/set-name 1 "Ada"]] fns))
+(d/entid db :user/email)
+(d/ident db 90)
+
+(d/datoms db :eavt 1 :user/name)
+(d/seek-datoms db :avet :user/email "m")
+(d/rseek-datoms db :avet :user/email "m")
+(d/index-range db :user/email "a" "n")
 ```
 
-The same shape works with `d/connect` durable handles. The callback receives
-`(db & args)` and returns ordinary tx-data. The DB value is valid for the
-callback call; keep durable application state outside the callback if it needs
-to outlive the transaction.
+Returned datoms support keyword lookup and indexed access, for example
+`(:v datom)` and `(nth datom 2)`.
+
+Use `db` for ordinary reads. When coordinating with another connection or
+process, `sync` returns a future in the Datomic shape:
+
+```clojure
+(def coordinated-db @(d/sync conn known-basis-t))
+```
+
+The two-argument form waits for a DB whose basis is at least the supplied `t`.
+The no-argument form captures all transactions complete when it is called.
+
+VevDB does not currently expose Datomic stored functions through the Clojure
+API. In particular, it does not persist or evaluate arbitrary host-language
+code, and `vev.core` does not add a callback-registration API that Datomic
+itself does not have.
 
 Immutable DB values support Datomic/DataScript-style `with` operations:
 

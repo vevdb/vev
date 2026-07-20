@@ -106,6 +106,7 @@ query shape:
 
 (def next-db               ; 5
   (d/db-with db [{:db/id 3 :user/name "Katherine"}]))
+
 ```
 
 1. `create-conn` creates an in-memory database connection.
@@ -168,7 +169,7 @@ Rust wraps the same native handles with RAII:
 use vevdb::Conn;
 
 fn main() -> Result<(), String> {
-    let conn = Conn::open_memory()?;                                // 1
+    let conn = Conn::create()?;                                     // 1
     conn.transact(r#"[{:db/id 1 :user/name "Ada"}]"#);             // 2
 
     let db = conn.db()?;                                            // 3
@@ -283,11 +284,15 @@ aggregates, rules, and immutable `db-with` operations.
 - In-memory databases with no SQLite requirement.
 - Durable local stores backed internally by SQLite.
 - Immutable database snapshots and hypothetical `db-with` values.
+- Composable `as-of`, `since`, and `history` database views over resident and
+  durable snapshots.
 - EAVT, AEVT, AVET, and VAET indexes with range and seek operations.
 - Datomic-flavored Datalog with predicates, functions, aggregates, rules,
   negation, disjunction, relation inputs, and pull expressions.
 - Datomic-shaped transaction data, schema constraints, tempids, lookup refs,
-  upserts, tuple attributes, transaction functions, and transaction reports.
+  upserts, tuple attributes, built-in transaction functions, and transaction
+  reports. Lower-level host callback functions are embedding extensions, not
+  Datomic stored functions.
 - Prepared query, pull, and transaction APIs for native hosts.
 - A C header and language wrappers over the native ABI.
 - A CLI for querying, transacting, pulling, and inspecting durable stores.
@@ -342,6 +347,7 @@ library and SQLite deployment details.
 - [Getting started](docs/getting-started.md)
 - [Database model](docs/data-model.md)
 - [Transactions](docs/transactions.md)
+- [Historical database values](docs/history.md)
 - [Query model](docs/query-model.md)
 - [Pull](docs/pull-model.md)
 - [Indexes](docs/indexes.md)

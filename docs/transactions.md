@@ -72,6 +72,55 @@ query them through transaction history instead of adding mechanically updated
 `created-at` and `updated-at` attributes to every entity. Domain timestamps
 remain appropriate when they describe a distinct business event.
 
+## Historical database values
+
+Vev exposes the three Datomic-shaped database filters:
+
+- `as-of(db, tx)` includes facts in effect at transaction `tx`, inclusive.
+- `since(db, tx)` includes current assertions made after `tx`, exclusive.
+- `history(db)` exposes assertions and retractions across the database value's
+  history. Five-position data clauses can bind transaction and added/retracted
+  status.
+
+The filters return immutable DB values and compose. For example, applying
+`history` to an `as-of` DB exposes the fact history only through that inclusive
+transaction boundary. Applying `db-with` to an `as-of` or `since` value keeps
+the time filter; a history DB cannot be used as the point-in-time basis for an
+entity view or transaction.
+
+Time points may be a Vev basis `t`, transaction entity id (`u64`, or the host
+language's corresponding integer), or native instant/date value. Instant
+values resolve to the greatest transaction whose `:db/txInstant` is less than
+or equal to the time point. For durable databases the view is backed by the
+persisted append-only datom indexes, so it remains available after close and
+reopen rather than depending on an old in-process handle. See
+[Historical database values](history.md) for boundary cases, composition, and
+the executable Datomic/Vev comparison.
+
+Public spellings follow each host language:
+
+- Kvist: `d.as-of`, `d.since`, `d.history`; `as-of` and `since` are overloaded
+  for transaction coordinates and tagged `Data` read from `#inst` EDN
+- C: `vev_db_as_of`, `vev_db_since`, `vev_db_history`, plus
+  `vev_db_as_of_instant_millis` and `vev_db_since_instant_millis`
+- Clojure: `d/as-of`, `d/since`, `d/history`
+- Java and Node: `db.asOf`, `db.since`, `db.history`
+- Python: `db.as_of`, `db.since`, `db.history`
+- Rust: `db.as_of`, `db.since`, `db.history`
+- Go: `db.AsOf`, `db.Since`, `db.History`
+
+Clojure and Kvist also expose Datomic-shaped immutable DB metadata:
+`basis-t`, `next-t`, `as-of-t`, and `since-t`. A filtered DB keeps the latest
+basis reachable from its source while reporting its normalized filter bound
+separately.
+
+The transaction log range API is `(d/tx-range (d/log conn) start end)` in
+Clojure and `d.tx-range` in Kvist. Its start is inclusive, its end is
+exclusive, and bounds may be open, transaction coordinates, or native
+instants. Each result has `{:t t :data datoms}` shape. See
+[Historical database values](history.md#transaction-ranges) for exact boundary
+semantics and the executable Datomic Peer comparison.
+
 Conceptually, each datom is associated with:
 
 - entity `e`
@@ -211,13 +260,13 @@ In the embedded single-process case, this is usually enough:
 That keeps reaction logic in application code rather than introducing a
 subscription mechanism inside the database core.
 
-## Transaction functions
+## Transaction functions and stored functions
 
-Vev supports DataScript/Datomic-shaped transaction functions through registered
-idents. A transaction can call a registered function with `:db.fn/call` or an
-ident shorthand form. The function receives the intermediate DB value at that
-point in the transaction and returns tx-data, which is parsed/resolved as part
-of the same transaction.
+VevDB does not yet implement Datomic stored functions. It does not persist or
+evaluate arbitrary host-language code, and the Datomic-shaped Clojure namespace
+does not expose a separate callback registry API. This avoids presenting a
+process-local callback mechanism as if it had Datomic's database-installed
+semantics.
 
 Through the C ABI, host-provided transaction functions currently return EDN
 tx-data strings and receive borrowed typed argument values plus a borrowed DB
@@ -226,11 +275,11 @@ released. This keeps the raw ABI simple while preserving normal transaction
 rollback semantics: if the callback fails or its returned tx-data is invalid,
 earlier segment operations are rolled back and listeners are not notified.
 
-The Java wrapper exposes this as `TxFunctionRegistry`, and the Clojure wrapper
-exposes `tx-fns`. Clojure callbacks receive `(db & args)` and return ordinary
-tx-data. The DB still needs the function ident installed with `:db/ident`,
-matching Datomic's model that transaction functions are named by DB idents
-while executable host code is supplied by the running process.
+The Java wrapper exposes that low-level host extension as
+`TxFunctionRegistry`. It remains useful for embedding and ABI validation, but
+it is explicitly not Datomic stored-function compatibility. If stored
+functions are added, they need a portable, deterministic execution and
+deployment model rather than process-local callback registration.
 
 ## Listener and derivation extension point
 

@@ -28,7 +28,7 @@ project can depend on `clients/rust` by path.
 Basic usage in the current smoke wrapper:
 
 ```rust
-let conn = Conn::open_memory()?;
+let conn = Conn::create()?;
 
 conn.transact(r#"[{:db/id 1 :user/name "Ada"}]"#);
 
@@ -36,6 +36,8 @@ let db = conn.db()?;
 let result = db.q("[:find ?name :where [?e :user/name ?name]]", "[]")?;
 let pulled = db.pull("[:user/name]", 1)?;
 ```
+
+`Conn::open_memory()` remains as a compatibility alias for `Conn::create()`.
 
 `q` returns a `Value` with the Datomic find shape: `Value::Set` for
 relations, `Value::Vector` for collections and tuples, and the scalar value or

@@ -118,6 +118,7 @@ vev_u64_array_t vev_connection_tx_ids(vev_connection_t conn);
 const char *vev_connection_info_edn(vev_connection_t conn);
 void vev_connection_close(vev_connection_t conn);
 vev_db_t vev_connection_db(vev_connection_t conn);
+vev_db_t vev_connection_latest_db(vev_connection_t conn);
 const char *vev_connection_query_edn(
     vev_connection_t conn,
     const char *query_text);
@@ -208,16 +209,42 @@ vev_db_t vev_conn_db(vev_conn_t conn);
 vev_conn_t vev_conn_from_db(vev_db_t db);
 vev_db_t vev_db_retain(vev_db_t db);
 void vev_db_release(vev_db_t db);
+unsigned long long vev_db_basis_t(vev_db_t db);
+unsigned long long vev_db_next_t(vev_db_t db);
+bool vev_db_has_as_of_t(vev_db_t db);
+unsigned long long vev_db_as_of_t(vev_db_t db);
+bool vev_db_has_since_t(vev_db_t db);
+unsigned long long vev_db_since_t(vev_db_t db);
+bool vev_db_is_history(vev_db_t db);
+vev_db_t vev_db_as_of(vev_db_t db, unsigned long long tx);
+vev_db_t vev_db_as_of_instant_millis(vev_db_t db, long long unix_millis);
+vev_db_t vev_db_since(vev_db_t db, unsigned long long tx);
+vev_db_t vev_db_since_instant_millis(vev_db_t db, long long unix_millis);
+vev_db_t vev_db_history(vev_db_t db);
+/* tx-range bound kinds: 0 = open, 1 = t or transaction id, 2 = Unix
+   milliseconds. The start is inclusive and the end is exclusive. */
+vev_value_handle_t vev_db_tx_range_value(
+    vev_db_t db,
+    int start_kind,
+    long long start_value,
+    int end_kind,
+    long long end_value);
 const char *vev_with_edn(vev_db_t db, const char *tx_text);
 vev_tx_report_t vev_with_edn_report(vev_db_t db, const char *tx_text);
 vev_db_t vev_db_with_edn(vev_db_t db, const char *tx_text);
 vev_entity_t vev_db_entity(vev_db_t db, unsigned long long entity);
 vev_entity_t vev_db_entity_lookup_ref_string(vev_db_t db, const char *attr, const char *value);
 vev_entity_t vev_db_entity_ident(vev_db_t db, const char *ident);
+/* mode: 0 = exact datoms, 1 = forward seek, 2 = reverse seek. */
+vev_value_handle_t vev_db_datoms_value(
+    vev_db_t db, int mode, const char *index, const char *components_edn);
+vev_value_handle_t vev_db_index_range_value(
+    vev_db_t db, const char *attr, const char *start_edn, const char *end_edn);
 void vev_entity_free(vev_entity_t entity);
 bool vev_entity_found(vev_entity_t entity);
 unsigned long long vev_entity_id(vev_entity_t entity);
 bool vev_entity_contains(vev_entity_t entity, const char *attr);
+int vev_entity_attr_flags(vev_entity_t entity, const char *attr);
 vev_value_handle_t vev_entity_get(vev_entity_t entity, const char *attr);
 vev_value_handle_t vev_entity_values(vev_entity_t entity, const char *attr);
 vev_entity_t vev_entity_ref(vev_entity_t entity, const char *attr);

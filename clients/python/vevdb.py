@@ -25,6 +25,7 @@ VEV_VALUE_SYMBOL = 7
 VEV_VALUE_VECTOR = 8
 VEV_VALUE_MAP = 9
 VEV_VALUE_UUID = 10
+VEV_VALUE_SET = 11
 VEV_VALUE_INSTANT = 12
 
 VEV_RESULT_VISIT_ROW_BEGIN = 1
@@ -53,6 +54,17 @@ VEV_COLUMN_KEYWORD = 8
 VEV_COLUMN_SYMBOL = 9
 VEV_COLUMN_UUID = 10
 VEV_COLUMN_INSTANT = 11
+
+
+def _datetime_millis(value: datetime) -> int:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    delta = value.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return (
+        delta.days * 86_400_000
+        + delta.seconds * 1_000
+        + delta.microseconds // 1_000
+    )
 
 RESULT_VISIT_FN = ctypes.CFUNCTYPE(
     ctypes.c_bool,
@@ -211,6 +223,7 @@ class Library:
         return DurableConnection(self, uri)
 
     def open_sqlite(self, path: str | pathlib.Path) -> "SQLiteConnection":
+        """Open the legacy SQLite-specific connection for migration or debugging."""
         return SQLiteConnection(self, path)
 
     def _configure(self) -> None:
@@ -301,6 +314,22 @@ class Library:
         ]
         lib.vev_sqlite_conn_transact_many_edn_reports.restype = ctypes.c_void_p
         lib.vev_db_release.argtypes = [ctypes.c_void_p]
+        lib.vev_db_as_of.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
+        lib.vev_db_as_of.restype = ctypes.c_void_p
+        lib.vev_db_as_of_instant_millis.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_longlong,
+        ]
+        lib.vev_db_as_of_instant_millis.restype = ctypes.c_void_p
+        lib.vev_db_since.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
+        lib.vev_db_since.restype = ctypes.c_void_p
+        lib.vev_db_since_instant_millis.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_longlong,
+        ]
+        lib.vev_db_since_instant_millis.restype = ctypes.c_void_p
+        lib.vev_db_history.argtypes = [ctypes.c_void_p]
+        lib.vev_db_history.restype = ctypes.c_void_p
         lib.vev_with_edn.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.vev_with_edn.restype = ctypes.c_void_p
         lib.vev_with_edn_report.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
@@ -1159,6 +1188,7 @@ def create_conn() -> "Connection":
 
 
 def open_memory() -> "Connection":
+    """Compatibility alias for create_conn()."""
     return create_conn()
 
 
@@ -1167,6 +1197,7 @@ def connect(uri: str | pathlib.Path) -> "DurableConnection":
 
 
 def open_sqlite(path: str | pathlib.Path) -> "SQLiteConnection":
+    """Open the legacy SQLite-specific connection for migration or debugging."""
     return SQLiteConnection(default_library(), path)
 
 
@@ -1620,6 +1651,44 @@ class DB:
         handle = self._library.lib.vev_db_with_edn(self._handle, _bytes(tx_edn))
         if not handle:
             raise VevError("failed to create DB snapshot")
+        return DB(self._library, handle)
+
+    def as_of(self, time_point: int | datetime) -> "DB":
+        """Return the database as of a transaction or datetime, inclusive."""
+        self._require_open()
+        if isinstance(time_point, datetime):
+            handle = self._library.lib.vev_db_as_of_instant_millis(
+                self._handle, _datetime_millis(time_point)
+            )
+        else:
+            handle = self._library.lib.vev_db_as_of(
+                self._handle, int(time_point)
+            )
+        if not handle:
+            raise VevError("failed to create as-of DB")
+        return DB(self._library, handle)
+
+    def since(self, time_point: int | datetime) -> "DB":
+        """Return facts asserted after a transaction or datetime, exclusive."""
+        self._require_open()
+        if isinstance(time_point, datetime):
+            handle = self._library.lib.vev_db_since_instant_millis(
+                self._handle, _datetime_millis(time_point)
+            )
+        else:
+            handle = self._library.lib.vev_db_since(
+                self._handle, int(time_point)
+            )
+        if not handle:
+            raise VevError("failed to create since DB")
+        return DB(self._library, handle)
+
+    def history(self) -> "DB":
+        """Return all assertions and retractions across this DB's history."""
+        self._require_open()
+        handle = self._library.lib.vev_db_history(self._handle)
+        if not handle:
+            raise VevError("failed to create history DB")
         return DB(self._library, handle)
 
     def entity(self, entity: int | Entity) -> "EntityView":

@@ -35,7 +35,7 @@ library, ok := vev.load_bundled("vendor/vev")
 assert(ok)
 defer vev.unload(&library)
 
-connection, ok := vev.open_memory(&library)
+connection, ok := vev.create_conn(&library)
 assert(ok)
 defer vev.close(&connection)
 
@@ -50,6 +50,8 @@ result, ok := vev.query(
 assert(ok)
 defer vev.close(&result)
 ```
+
+`open_memory` remains as a compatibility alias for `create_conn`.
 
 For a shared dependency directory, expose a collection at build time:
 
@@ -88,6 +90,60 @@ defer delete(name)
 Each durable `query` call takes a fresh immutable DB snapshot. An application,
 REPL, or VevDB CLI can therefore share the same durable store, while retained
 query values continue to represent the query basis they captured.
+
+Retain a database value explicitly when working across time:
+
+```odin
+database, ok := vev.db(&connection)
+assert(ok)
+defer vev.close(&database)
+
+earlier, ok := vev.as_of(&database, transaction_t)
+assert(ok)
+defer vev.close(&earlier)
+
+recent, ok := vev.since(&database, transaction_t)
+assert(ok)
+defer vev.close(&recent)
+
+audit, ok := vev.history(&database)
+assert(ok)
+defer vev.close(&audit)
+
+result, ok := vev.query(
+	&audit,
+	`[:find ?value ?tx ?added
+	  :where [?e :item/value ?value ?tx ?added]]`,
+)
+```
+
+`as_of` and `since` accept either a transaction coordinate (`u64`) or
+`time.Time`. The returned `DB` values are immutable and independently owned.
+`basis_t`, `next_t`, `as_of_t`, `since_t`, and `is_history` expose the same
+database metadata as Datomic.
+
+Convert between the two transaction coordinate forms with `t_to_tx` and
+`tx_to_t`:
+
+```odin
+tx := vev.t_to_tx(transaction_t)
+assert(vev.tx_to_t(tx) == transaction_t)
+```
+
+The transaction log uses the same inclusive-start, exclusive-end contract:
+
+```odin
+log_value, ok := vev.log(&connection)
+assert(ok)
+defer vev.close(&log_value)
+
+transactions, ok := vev.tx_range(&log_value)
+assert(ok)
+defer vev.close(&transactions)
+```
+
+Pass `u64` transaction coordinates or `time.Time` values as the optional start
+and end arguments. Each transaction is a map containing `:t` and `:data`.
 
 The complete consumer example is in [`example`](example). Run it from the
 repository root after packaging the vendor bundle:
