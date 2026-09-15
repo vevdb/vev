@@ -54,8 +54,8 @@ This is a storage backup, distinct from an immutable in-process DB value. Vev
 uses SQLite's online-backup protocol, so committed data in the WAL is included
 and concurrent readers remain valid. The destination must not already exist;
 Vev never silently replaces it. On success, `basis` is the public transaction
-coordinate contained in the completed destination—not an estimate taken from
-the source before copying.
+coordinate contained in the completed destination. It is not an estimate taken
+from the source before copying.
 
 The result is a normal writable Vev store. A backup system should independently
 open it, verify its application metadata, and add its own manifest and checksum

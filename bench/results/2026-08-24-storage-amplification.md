@@ -1,4 +1,4 @@
-# Durable storage amplification — 2026-08-24
+# Durable storage amplification. 2026-08-24
 
 Local macOS measurements against the deterministic 1,000-assertion workload.
 The baseline is VevDB `17a91713` (0.3.0). Each transaction in the after column
@@ -17,7 +17,7 @@ checkpoint; timings include one CLI process and every commit.
 rows also remain zero. The remaining growth from 598 KiB to 1.278 MiB in the
 1,000-transaction case is predominantly the
 required transaction rows, `:db/txInstant` datoms, transaction metadata, and
-their ordinary SQLite indexes—not retained historical chunk roots.
+their ordinary SQLite indexes. Historical chunk roots are not retained.
 
 Median process-level open/query latency after the change stayed between
 7.5–49.6 ms and 17.2–31.0 ms respectively. The checked-in JSON budget uses

@@ -108,9 +108,9 @@ snapshots and local data, so close them when done:
 ```
 
 Kvist and Clojure are VevDB's paired primary APIs. Kvist provides the same core
-database operations—including `as-of`, `since`, history inspection, datom index
+database operations, including `as-of`, `since`, history inspection, datom index
 reads, entity and lookup-ref resolution, pull, `db-with`, transaction reports,
-and synchronized snapshots—with Kvist-native ownership and result types.
+and synchronized snapshots, with Kvist-native ownership and result types.
 
 See [Datomic and VevDB](../../docs/datomic-syntax.md) for the shared data model,
 tutorial adaptations, supported Peer operations, and deliberate non-goals.
