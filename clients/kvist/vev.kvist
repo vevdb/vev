@@ -589,6 +589,44 @@
         (panic "Vev pull-many failed"))
       (native-data-result result true))))
 
+(defn try-pull-many-ids
+  [db-value: DB, pattern: Data, entities: []u64]
+  -> [value: Data, ok: bool, error: string]
+  (when (= (rawptr db-value) nil)
+    (return (data.from-nil)
+            false
+            (clone-text "Vev pull-many DB is nil")))
+  (let [pattern-text (edn.write pattern)]
+    (defer (delete pattern-text))
+    (let [state (db-state db-value)
+          [result result-ok]
+          (native.pull-many
+            (addr state^.database) pattern-text entities)]
+      (when (not result-ok)
+        (return (data.from-nil)
+                false
+                (clone-text "Vev pull-many failed")))
+      (defer (native.close (addr result)))
+      (let [[native-value value-ok] (native.value (addr result))]
+        (when (not value-ok)
+          (return (data.from-nil)
+                  false
+                  (clone-text "could not decode Vev pull-many result")))
+        (when (or (not (= (native.kind native-value) .Vector))
+                  (not (= (native.item-count native-value)
+                          (count entities))))
+          (return (data.from-nil)
+                  false
+                  (clone-text "Vev pull-many result shape was invalid")))
+        (let [converted (native-value-data native-value)]
+          (when (or (not (data.vector? converted))
+                    (not (= (data.count converted) (count entities))))
+            (data.release converted)
+            (return (data.from-nil)
+                    false
+                    (clone-text "could not convert Vev pull-many result")))
+          (return converted true (clone-text "")))))))
+
 (defn pull-many-refs [db-value: DB, pattern: Data, requested: Data] -> Data
   (when (not (data.vector? requested))
     (panic "pull-many entity references must be a vector"))

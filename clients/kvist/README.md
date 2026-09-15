@@ -42,6 +42,11 @@ human-readable `:error`. Match `:none`, `:stale-basis`, `:invalid-request`,
 `:unsupported`, `:storage-error`, or `:internal-error`; do not classify the
 diagnostic text.
 
+Use `try-pull-many-ids` when a batch pull must report failure instead of
+panicking. It returns `[value ok error]`; a successful value is a vector with
+exactly one positional result per requested entity ID, including `nil` for a
+missing entity. Release `value` and delete `error` on both success and failure.
+
 Create a consistent durable backup without copying SQLite/WAL files directly:
 
 ```clojure

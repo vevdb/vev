@@ -5,6 +5,7 @@
 (import native "../../clients/odin/vev")
 (import data "kvist:data")
 (import edn "kvist:edn")
+(import arr "kvist:arr")
 (import fmt "core:fmt")
 
 (defn same-data? [left: Data, right: Data] -> bool
@@ -654,7 +655,77 @@
                 ([]u64 [ada-id grace-id]))]
           (defer (data.release pulled))
           (when (not (= (data.count pulled) 2))
-            (panic "binary Kvist pull-many omitted entities"))))
+            (panic "binary Kvist pull-many omitted entities")))
+        (let [[empty empty-ok empty-error]
+                (d.try-pull-many-ids db '[:person/id] ([]u64 []))]
+          (defer (data.release empty))
+          (defer (delete empty-error))
+          (when (or (not empty-ok)
+                    (not (data.vector? empty))
+                    (not (= (data.count empty) 0))
+                    (not (= empty-error "")))
+            (panic "fallible pull-many did not preserve an empty batch")))
+        (let [entity-ids (make [dynamic]u64 0 256)]
+          (defer (delete entity-ids))
+          (for [index (arr.range 0 256)]
+            (arr.push! entity-ids
+                       (if (= (% index 2) 0) ada-id grace-id)))
+          (let [[pulled pulled-ok pulled-error]
+                  (d.try-pull-many-ids
+                    db '[:person/id] (slice entity-ids 0))]
+            (defer (data.release pulled))
+            (defer (delete pulled-error))
+            (when (or (not pulled-ok)
+                      (not (data.vector? pulled))
+                      (not (= (data.count pulled) 256))
+                      (not (= pulled-error "")))
+              (panic "fallible pull-many changed batch cardinality"))
+            (for [index (arr.range 0 256)]
+              (let [person-id
+                      (data.get-in (data.nth pulled index) [:person/id])
+                    expected
+                      (if (= (% index 2) 0) "ada" "grace")]
+                (when (or (not (data.string? person-id))
+                          (not (= (data.string person-id) expected)))
+                  (panic "fallible pull-many changed input order")))))
+          (let [[with-missing missing-ok missing-error]
+                  (d.try-pull-many-ids
+                    db
+                    '[:person/id]
+                    ([]u64 [ada-id (u64 999999999) grace-id]))]
+            (defer (data.release with-missing))
+            (defer (delete missing-error))
+            (when (or (not missing-ok)
+                      (not (= (data.count with-missing) 3))
+                      (not (data.nil? (data.nth with-missing 1))))
+              (panic "fallible pull-many lost a missing positional slot")))
+          (for [_ (arr.range 0 128)]
+            (let [[owned owned-ok owned-error]
+                    (d.try-pull-many-ids
+                      db '[:person/id] (slice entity-ids 0))]
+              (when (or (not owned-ok)
+                        (not (= (data.count owned) 256)))
+                (panic "fallible pull-many ownership loop failed"))
+              (data.release owned)
+              (delete owned-error))))
+        (let [[invalid invalid-ok invalid-error]
+                (d.try-pull-many-ids
+                  db :not-a-pull-pattern ([]u64 [ada-id]))]
+          (defer (data.release invalid))
+          (defer (delete invalid-error))
+          (when (or invalid-ok
+                    (not (data.nil? invalid))
+                    (= invalid-error ""))
+            (panic "fallible pull-many accepted an invalid pattern")))
+        (let [[nil-db nil-db-ok nil-db-error]
+                (d.try-pull-many-ids
+                  (d.DB nil) '[:person/id] ([]u64 [ada-id]))]
+          (defer (data.release nil-db))
+          (defer (delete nil-db-error))
+          (when (or nil-db-ok
+                    (not (data.nil? nil-db))
+                    (= nil-db-error ""))
+            (panic "fallible pull-many accepted a nil DB"))))
       (let [name
             (d.q
               '[:find ?name .
