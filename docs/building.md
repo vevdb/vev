@@ -73,9 +73,15 @@ another commit also prints the abbreviated commit and its date.
 Run the core client and CLI checks:
 
 ```sh
+scripts/test_unit.sh
+scripts/test_memory.sh
 scripts/smoke_clients.sh
 scripts/smoke_cli.sh
 ```
+
+`test_unit.sh` runs every VevDB Kvist test root. `test_memory.sh` runs the core,
+storage, and bounded-paging suites with per-test memory tracking. Both run in
+the release gate on Linux.
 
 `smoke_clients.sh` builds the native library first. Missing optional language
 toolchains are skipped.

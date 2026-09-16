@@ -673,6 +673,7 @@ mapping. The minimum human-readable mapping is:
 | index residency and maintenance | maintenance commands |
 | latest index merge-run information | `index-info`; exec operation |
 | transaction listeners | `watch` report stream |
+| bounded `q-page` and file-level durable basis inspection | separate native APIs |
 | custom host callbacks | `:host-extension`, outside data-only parity |
 | direct SQLite | `:separate-api` |
 
