@@ -33,11 +33,7 @@
   (save-db-snapshot-text path conn.db))
 
 (defn db-basis-tx [db: DB] -> u64
-  (let [basis: u64 0]
-    (for [datom db.datoms]
-      (when (> datom.tx basis)
-        (set! basis datom.tx)))
-    basis))
+  db.basis-tx)
 
 (defn storage-int-slices-equal? [left: []int, right: []int] -> bool
   (when (not (= (count left) (count right)))
@@ -224,6 +220,8 @@
   append-avet-root-build-us: f64
   append-vaet-root-build-us: f64
   append-root-publish-us: f64
+  current-avet-delta-entries: u64
+  current-avet-full-scan-entries: u64
   append-commit-us: f64
   report-open-us: f64
   auto-maintenance-us: f64
@@ -774,12 +772,31 @@
             (when (not vaet-ok)
               (return false false vaet-error))
             (defer (delete vaet))
-            (let [[stmts stmts-ok stmts-error] (sqlite-index-write-stmts-open store^.handle)]
-              (when (not stmts-ok)
-                (return false false stmts-error))
-              (defer (sqlite-index-write-stmts-close stmts))
-              (let [[root-ok root-error] (persist-index-root-sqlite-handle-from-indexes-with-stmts store^.handle (addr stmts) basis (slice eavt 0) (slice aevt 0) (slice avet 0) (slice vaet 0))]
-                (return root-ok root-ok root-error)))))))))
+            ;; Current AVET manifest runs contain transaction deltas, including
+            ;; tombstones. Explicit compaction may scan canonical history once
+            ;; to collapse that lineage into one exact live-state run.
+            (let [[row-text rows-ok rows-error]
+                    (vev.sqlite-load-datom-rows-text-handle-raw store^.handle)]
+              (when (not rows-ok)
+                (delete row-text)
+                (return false false rows-error))
+              (defer (delete row-text))
+              (let [[current-db current-ok current-error]
+                      (from-serializable-text row-text)]
+                (when (not current-ok)
+                  (delete-owned-db current-db)
+                  (return false false current-error))
+                (defer (delete-owned-db current-db))
+                (let [[stmts stmts-ok stmts-error] (sqlite-index-write-stmts-open store^.handle)]
+                  (when (not stmts-ok)
+                    (return false false stmts-error))
+                  (defer (sqlite-index-write-stmts-close stmts))
+                  (let [[root-ok root-error]
+                          (persist-index-root-sqlite-handle-from-indexes-with-stmts
+                            store^.handle (addr stmts) basis
+                            (slice eavt 0) (slice aevt 0) (slice avet 0)
+                            (slice vaet 0) (slice current-db.current-avet 0))]
+                    (return root-ok root-ok root-error)))))))))))
 
 (defn sqlite-conn-compact-indexes! [store: ^SQLite-Conn] -> [compacted: bool, ok: bool, error: string]
   (when store^.source-only
@@ -900,6 +917,13 @@
               (shared-db-snapshot-read-source (addr store^.shared-resident.snapshot)))]
       (when (or (not resident-ok) (not (= resident-basis head-basis)))
         (return false false sqlite-write-basis-changed-error)))
+  (let [[current-db current-db-ok current-db-error]
+          (db-read-source-materialize-db
+            (shared-db-snapshot-read-source
+              (addr store^.shared-resident.snapshot)))]
+    (when (not current-db-ok)
+      (return false false current-db-error))
+    (defer (delete-owned-db current-db))
   (let [[eavt eavt-ok] (shared-int-index-to-slice store^.shared-resident.snapshot.indexes.eavt)]
     (when (not eavt-ok)
       (return false false "failed to materialize resident EAVT checkpoint"))
@@ -932,7 +956,8 @@
             (let [[root-ok root-error]
                     (persist-index-root-sqlite-handle-from-indexes-with-stmts
                       store^.handle (addr stmts) head-basis
-                      (slice eavt 0) (slice aevt 0) (slice avet 0) (slice vaet 0))]
+                      (slice eavt 0) (slice aevt 0) (slice avet 0)
+                      (slice vaet 0) (slice current-db.current-avet 0))]
               (when (not root-ok)
                 (vev.sqlite-rollback-raw store^.handle)
                 (return false false root-error))))
@@ -946,7 +971,7 @@
               (vev.sqlite-rollback-raw store^.handle)
               (return false false commit-error)))
           (sqlite-conn-invalidate-current-root-cache! store)
-          (return true true "")))))))
+          (return true true ""))))))))
 
 (defn sqlite-auto-checkpoint-report! [store: ^SQLite-Conn, report: Store-Tx-Report] -> Store-Tx-Report
   (when report.ok
@@ -2002,23 +2027,42 @@
       (set! opened-snapshot.path (string-owned path))
       (return opened-snapshot true ""))))
 
-(defn sqlite-open-db-snapshot-at-basis [path: string, basis-tx: u64, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
+(defn sqlite-open-db-snapshot-at-basis-status
+  [path: string, basis-tx: u64, page-size: int]
+  -> [snapshot: SQLite-DB-Snapshot, found: bool, ok: bool, error: string]
   (let [[handle open-ok open-error] (vev.sqlite-open-live-raw path)]
     (when (not open-ok)
-      (return (SQLite-DB-Snapshot) false open-error))
+      (return (SQLite-DB-Snapshot) false false open-error))
     (let [[read-started read-ok read-error] (vev.sqlite-begin-query-read-raw handle)]
       (when (not read-ok)
         (vev.sqlite-close-live-raw handle)
-        (return (SQLite-DB-Snapshot) false read-error))
+        (return (SQLite-DB-Snapshot) false false read-error))
       (discard read-started))
-    (let [[opened-snapshot snapshot-ok snapshot-error] (sqlite-open-db-snapshot-handle-at-basis handle basis-tx page-size)]
+    (let [[opened-snapshot snapshot-found snapshot-ok snapshot-error]
+            (sqlite-open-db-snapshot-handle-at-basis-status
+              handle basis-tx page-size)]
       (when (not snapshot-ok)
         (vev.sqlite-end-query-read-raw handle true)
         (vev.sqlite-close-live-raw handle)
-        (return opened-snapshot false snapshot-error))
+        (return opened-snapshot false false snapshot-error))
+      (when (not snapshot-found)
+        (vev.sqlite-end-query-read-raw handle true)
+        (vev.sqlite-close-live-raw handle)
+        (return opened-snapshot false true ""))
       (set! opened-snapshot.indexes.owns-handle true)
       (set! opened-snapshot.path (string-owned path))
-      (return opened-snapshot true ""))))
+      (return opened-snapshot true true ""))))
+
+(defn sqlite-open-db-snapshot-at-basis
+  [path: string, basis-tx: u64, page-size: int]
+  -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
+  (let [[out-snapshot out-found out-ok out-error]
+          (sqlite-open-db-snapshot-at-basis-status path basis-tx page-size)]
+    (when (not out-ok)
+      (return out-snapshot false out-error))
+    (when (not out-found)
+      (return out-snapshot false "sqlite DB has no Vev index root for basis"))
+    (return out-snapshot true "")))
 
 (defn close-sqlite-db-snapshot! [snapshot: ^SQLite-DB-Snapshot]
   (vev.sqlite-finalize-stmt-raw snapshot^.datom-stmt)
@@ -2429,55 +2473,38 @@
       (delete-shared-conn candidate)
       (return report))
     (set! append-start (time.now))
-    (let [begin-start (time.now)
-          [begin-ok begin-error] (vev.sqlite-begin-immediate-raw store^.handle)]
-      (set! store^.direct-write-profile.append-begin-us
-        (+ store^.direct-write-profile.append-begin-us
-           (sqlite-profile-elapsed-us begin-start)))
-      (when (not begin-ok)
-        (delete-shared-conn candidate)
-        (delete-store-tx-report report)
-        (return (failed-sqlite-store-tx-report store begin-error))))
     (let [[source source-ok source-error]
             (store-db-read-source (addr report.db-before))]
       (when (not source-ok)
-        (vev.sqlite-rollback-raw store^.handle)
         (delete-shared-conn candidate)
         (delete-store-tx-report report)
         (return (failed-sqlite-store-tx-report store source-error)))
       (let [canonical-start
               (tx-phase-profile-start (addr store^.tx-phase-profile))
             start-index report.db-before.shared-snapshot.datoms.count
-            [append-ok append-error]
-              (append-source-direct-sqlite-conn-log-only-open-tx!
-                store
-                source
-                report.tx
-                (slice report.tx-data 0)
-                (slice report.tx-meta 0)
-                start-index
-                (addr store^.direct-write-profile))]
-        (when (not append-ok)
-          (vev.sqlite-rollback-raw store^.handle)
+            [append-modes modes-ok modes-error]
+              (source-append-modes-for-store-report source report start-index)]
+        (when (not modes-ok)
           (delete-shared-conn candidate)
           (delete-store-tx-report report)
-          (return (failed-sqlite-store-tx-report store append-error)))
-      (tx-phase-profile-add-canonical-append!
-        (addr store^.tx-phase-profile) canonical-start))
-    (let [commit-phase-start
-            (tx-phase-profile-start (addr store^.tx-phase-profile))
-          commit-start (time.now)
-          [commit-ok commit-error] (vev.sqlite-commit-raw store^.handle)]
-      (tx-phase-profile-add-sqlite-commit!
-        (addr store^.tx-phase-profile) commit-phase-start)
-      (set! store^.direct-write-profile.append-commit-us
-        (+ store^.direct-write-profile.append-commit-us
-           (sqlite-profile-elapsed-us commit-start)))
-      (when (not commit-ok)
-        (vev.sqlite-rollback-raw store^.handle)
-        (delete-shared-conn candidate)
-        (delete-store-tx-report report)
-        (return (failed-sqlite-store-tx-report store commit-error))))
+          (return (failed-sqlite-store-tx-report store modes-error)))
+        (let [plan
+                (sqlite-durable-append-plan-from-modes
+                  (slice report.tx-data 0) start-index append-modes
+                  (addr store^.direct-write-profile))
+              [_published append-ok append-error]
+                (append-source-direct-sqlite-conn-from-source-plan-published-mode
+                  store source report.tx (slice report.tx-data 0)
+                  (slice report.tx-meta 0) plan
+                  (addr store^.direct-write-profile) true)]
+          (discard _published)
+          (delete-sqlite-durable-append-plan plan)
+          (when (not append-ok)
+            (delete-shared-conn candidate)
+            (delete-store-tx-report report)
+            (return (failed-sqlite-store-tx-report store append-error))))
+        (tx-phase-profile-add-canonical-append!
+          (addr store^.tx-phase-profile) canonical-start)))
     (let [derived-start
             (tx-phase-profile-start (addr store^.tx-phase-profile))]
       (sqlite-conn-advance-write-state-cache-after-datoms!
@@ -2499,7 +2526,7 @@
     (sqlite-conn-invalidate-current-root-cache! store)
     (tx-phase-profile-add-derived-bookkeeping!
       (addr store^.tx-phase-profile) derived-start)
-    report)))))
+    report))))
 
 (defn transact-sqlite-store-report-tx-data [store: ^SQLite-Conn, tx-data: []Tx-Data] -> Store-Tx-Report
   (when store^.source-only

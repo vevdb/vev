@@ -91,6 +91,41 @@ main :: proc() {
 	}
 	defer vev.close(&current_db)
 
+	invalid_page, invalid_page_ok := vev.query_page_db(
+		&current_db,
+		`[:find ?broken`,
+		":entry/page-key",
+		`["group-a"]`,
+	)
+	if !invalid_page_ok {
+		fmt.eprintln("q-page did not return its typed error result")
+		os.exit(1)
+	}
+	defer vev.close(&invalid_page)
+	page_error, page_error_ok := vev.query_page_error_code(&invalid_page)
+	if !page_error_ok || page_error != .Invalid_Request {
+		fmt.eprintln("unexpected q-page error code")
+		os.exit(1)
+	}
+	invalid_db := current_db
+	invalid_db.handle = nil
+	null_db_page, null_db_page_ok := vev.query_page_db(
+		&invalid_db,
+		`[:find ?entry ?key :where [?entry :entry/page-key ?key]]`,
+		":entry/page-key",
+		`["group-a"]`,
+	)
+	if !null_db_page_ok {
+		fmt.eprintln("q-page null DB did not return typed invalid-request")
+		os.exit(1)
+	}
+	defer vev.close(&null_db_page)
+	null_db_error, null_db_error_ok := vev.query_page_error_code(&null_db_page)
+	if !null_db_error_ok || null_db_error != .Invalid_Request {
+		fmt.eprintln("unexpected q-page null DB error code")
+		os.exit(1)
+	}
+
 	earlier_db, as_of_ok := vev.as_of(&current_db, u64(tx))
 	recent_db, since_ok := vev.since(&current_db, u64(tx))
 	history_db, history_ok := vev.history(&current_db)

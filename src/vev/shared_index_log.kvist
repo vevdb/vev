@@ -530,9 +530,8 @@
     (shared-int-index-rebuild-chunk-starts! (addr out))
     out))
 
-(defn shared-int-index-with-merged-appended-datom-slice-direct [base: Shared-Int-Index, log: Shared-Datom-Log, appended: []Datom, start-index: int, order: string] -> Shared-Int-Index
+(defn shared-int-index-with-merged-appended-indexes-direct [base: Shared-Int-Index, log: Shared-Datom-Log, appended: []Datom, start-index: int, order: string, added: []int] -> Shared-Int-Index
   (let [out (shared-int-index-empty base.chunk-size)
-        added (sorted-appended-datom-slice-indexes appended start-index order) :defer
         chunk-index 0
         added-index 0]
     (while (< chunk-index (count base.chunks))
@@ -580,6 +579,11 @@
     (shared-int-index-rebuild-chunk-starts! (addr out))
     out))
 
+(defn shared-int-index-with-merged-appended-datom-slice-direct [base: Shared-Int-Index, log: Shared-Datom-Log, appended: []Datom, start-index: int, order: string] -> Shared-Int-Index
+  (let [added (sorted-appended-datom-slice-indexes appended start-index order) :defer]
+    (shared-int-index-with-merged-appended-indexes-direct
+      base log appended start-index order (slice added 0))))
+
 (defn shared-int-index-prefix-matches-slice? [base: Shared-Int-Index, values: []int] -> bool
   (when (> base.count (count values))
     (return false))
@@ -597,17 +601,96 @@
     (shared-int-index-with-appended-slice base (slice values base.count))
     (shared-int-index-from-slice values base.chunk-size)))
 
+(defn shared-page-schema-cache-from-db [db: DB]
+  -> Shared-Page-Schema-Cache
+  (let [state (alloc Shared-Page-Schema-Cache-State context.allocator)]
+    (set! state^
+      (Shared-Page-Schema-Cache-State
+        :attrs (make [dynamic]string)
+        :tuple-widths (mmap.empty string int)
+        :unique (set.empty string)
+        :refs (make [dynamic]int 0 1)))
+    (arr.push! state^.refs 1)
+    (for [attr db.schema-tuple-widths]
+      (let [[width found] (mmap.get db.schema-tuple-widths attr)]
+        (when found
+          (let [owned (string-owned attr)]
+            (arr.push! state^.attrs owned)
+            (mmap.assoc! state^.tuple-widths owned width)
+            (when (set.contains? db.schema-unique attr)
+              (set.add! state^.unique owned))))))
+    (Shared-Page-Schema-Cache :state state)))
+
+(defn retain-shared-page-schema-cache
+  [cache: Shared-Page-Schema-Cache] -> Shared-Page-Schema-Cache
+  (when (not (= cache.state nil))
+    (set! cache.state^.refs[0] (+ cache.state^.refs[0] 1)))
+  cache)
+
+(defn delete-shared-page-schema-cache [cache: Shared-Page-Schema-Cache]
+  (when (= cache.state nil)
+    (return))
+  (set! cache.state^.refs[0] (- cache.state^.refs[0] 1))
+  (when (= cache.state^.refs[0] 0)
+    (delete cache.state^.tuple-widths)
+    (delete cache.state^.unique)
+    (for [attr cache.state^.attrs]
+      (delete attr))
+    (delete cache.state^.attrs)
+    (delete cache.state^.refs)
+    (free cache.state)))
+
+(defn appended-modifies-db-schema? [appended: []Datom] -> bool
+  (for [datom appended]
+    (when (datom-modifies-db-schema? datom)
+      (return true)))
+  false)
+
+(defn shared-page-schema-cache-after-db-or-retain
+  [base: Shared-Page-Schema-Cache, after: DB, appended: []Datom]
+  -> Shared-Page-Schema-Cache
+  (if (appended-modifies-db-schema? appended)
+    (shared-page-schema-cache-from-db after)
+    (retain-shared-page-schema-cache base)))
+
+(defn shared-page-schema-cache-after-appended
+  [base: Shared-DB-Snapshot, appended: []Datom]
+  -> Shared-Page-Schema-Cache
+  (when (not (appended-modifies-db-schema? appended))
+    (return
+      (retain-shared-page-schema-cache base.indexes.page-schema-cache)))
+  ;; Schema mutation is rare and already leaves the source-backed fast path.
+  ;; Materialize only at publication time to create the next immutable proof;
+  ;; all ordinary data transactions retain the prior generation in O(1).
+  (let [all (make [dynamic]Datom 0 (+ base.datoms.count (count appended)))]
+    (for [position (arr.range 0 base.datoms.count)]
+      (let [[datom found] (shared-datom-log-at base.datoms position)]
+        (when found
+          (arr.push! all datom))))
+    (for [datom appended]
+      (arr.push! all (datom-owned datom)))
+    (let [after (build-db all)
+          cache (shared-page-schema-cache-from-db after)]
+      (delete-resident-db after)
+      cache)))
+
 (defn shared-db-int-indexes-from-db [db: DB, chunk-size: int] -> Shared-DB-Int-Indexes
-  (Shared-DB-Int-Indexes :current (shared-int-index-from-slice (slice db.current 0) chunk-size)
+  (Shared-DB-Int-Indexes :page-schema-cache (shared-page-schema-cache-from-db db)
+                          :current (shared-int-index-from-slice (slice db.current 0) chunk-size)
+                          :current-avet (shared-int-index-from-slice (slice db.current-avet 0) chunk-size)
                           :eavt (shared-int-index-from-slice (slice db.eavt 0) chunk-size)
                           :aevt (shared-int-index-from-slice (slice db.aevt 0) chunk-size)
                           :avet (shared-int-index-from-slice (slice db.avet 0) chunk-size)
                           :vaet (shared-int-index-from-slice (slice db.vaet 0) chunk-size)))
 
 (defn shared-db-int-indexes-with-appended-datom-slice-mode [base: Shared-DB-Int-Indexes, after: DB, appended: []Datom, start-index: int, append-only: bool, new-entities-after-existing: bool] -> Shared-DB-Int-Indexes
-  (Shared-DB-Int-Indexes :current (if append-only
+  (Shared-DB-Int-Indexes :page-schema-cache
+                           (shared-page-schema-cache-after-db-or-retain
+                             base.page-schema-cache after appended)
+                          :current (if append-only
                                      (shared-int-index-with-appended-range base.current start-index (+ start-index (count appended)))
                                      (shared-int-index-from-base-prefix-or-slice base.current (slice after.current 0)))
+                          :current-avet (shared-int-index-from-base-prefix-or-slice base.current-avet (slice after.current-avet 0))
                           ;; Ordinary entity allocation is monotonic only
                           ;; within its partition. Existing transaction
                           ;; entities sort after newly allocated application
@@ -625,29 +708,43 @@
                                   (shared-int-index-with-merged-appended-datoms base.vaet (slice after.datoms 0) start-index "vaet")
                                   (shared-int-index-from-base-prefix-or-slice base.vaet (slice after.vaet 0)))))
 
-(defn shared-db-int-indexes-with-append-publish-plan [base: Shared-DB-Int-Indexes, before: DB, appended: []Datom, plan: Tx-Publish-Plan] -> Shared-DB-Int-Indexes
-  (Shared-DB-Int-Indexes :current (shared-int-index-with-appended-range base.current plan.start-index (+ plan.start-index plan.appended-count))
-                          :eavt (shared-int-index-with-merged-appended-indexes-across-append base.eavt (slice before.datoms 0) appended plan.start-index "eavt" (slice plan.eavt 0))
-                          :aevt (shared-int-index-with-merged-appended-indexes-across-append base.aevt (slice before.datoms 0) appended plan.start-index "aevt" (slice plan.aevt 0))
-                          :avet (shared-int-index-with-merged-appended-indexes-across-append base.avet (slice before.datoms 0) appended plan.start-index "avet" (slice plan.avet 0))
-                          :vaet (shared-int-index-with-merged-appended-indexes-across-append base.vaet (slice before.datoms 0) appended plan.start-index "vaet" (slice plan.vaet 0))))
+(defn shared-db-int-indexes-with-append-publish-plan [base: Shared-DB-Snapshot, before: DB, appended: []Datom, plan: Tx-Publish-Plan] -> Shared-DB-Int-Indexes
+  (Shared-DB-Int-Indexes :page-schema-cache
+                           (shared-page-schema-cache-after-appended
+                             base appended)
+                          :current (shared-int-index-with-appended-range base.indexes.current plan.start-index (+ plan.start-index plan.appended-count))
+                          :current-avet (shared-current-avet-index-with-appended-datoms base appended plan.start-index)
+                          :eavt (shared-int-index-with-merged-appended-indexes-across-append base.indexes.eavt (slice before.datoms 0) appended plan.start-index "eavt" (slice plan.eavt 0))
+                          :aevt (shared-int-index-with-merged-appended-indexes-across-append base.indexes.aevt (slice before.datoms 0) appended plan.start-index "aevt" (slice plan.aevt 0))
+                          :avet (shared-int-index-with-merged-appended-indexes-across-append base.indexes.avet (slice before.datoms 0) appended plan.start-index "avet" (slice plan.avet 0))
+                          :vaet (shared-int-index-with-merged-appended-indexes-across-append base.indexes.vaet (slice before.datoms 0) appended plan.start-index "vaet" (slice plan.vaet 0))))
 
-(defn shared-db-int-indexes-with-appended-datom-slice-direct [base: Shared-DB-Int-Indexes, log: Shared-Datom-Log, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> Shared-DB-Int-Indexes
-  (Shared-DB-Int-Indexes :current (shared-int-index-with-appended-range base.current start-index (+ start-index (count appended)))
-                          :eavt (shared-int-index-with-merged-appended-datom-slice-direct base.eavt log appended start-index "eavt")
-                          :aevt (shared-int-index-with-merged-appended-datom-slice-direct base.aevt log appended start-index "aevt")
-                          :avet (shared-int-index-with-merged-appended-datom-slice-direct base.avet log appended start-index "avet")
-                          :vaet (shared-int-index-with-merged-appended-datom-slice-direct base.vaet log appended start-index "vaet")))
+(defn shared-db-int-indexes-with-appended-datom-slice-direct [base: Shared-DB-Snapshot, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> Shared-DB-Int-Indexes
+  (Shared-DB-Int-Indexes :page-schema-cache
+                           (shared-page-schema-cache-after-appended
+                             base appended)
+                          :current (shared-int-index-with-appended-range base.indexes.current start-index (+ start-index (count appended)))
+                          :current-avet (shared-current-avet-index-with-appended-datoms base appended start-index)
+                          :eavt (shared-int-index-with-merged-appended-datom-slice-direct base.indexes.eavt base.datoms appended start-index "eavt")
+                          :aevt (shared-int-index-with-merged-appended-datom-slice-direct base.indexes.aevt base.datoms appended start-index "aevt")
+                          :avet (shared-int-index-with-merged-appended-datom-slice-direct base.indexes.avet base.datoms appended start-index "avet")
+                          :vaet (shared-int-index-with-merged-appended-datom-slice-direct base.indexes.vaet base.datoms appended start-index "vaet")))
 
 (defn retain-shared-db-int-indexes [indexes: Shared-DB-Int-Indexes] -> Shared-DB-Int-Indexes
-  (Shared-DB-Int-Indexes :current (retain-shared-int-index indexes.current)
+  (Shared-DB-Int-Indexes :page-schema-cache
+                           (retain-shared-page-schema-cache
+                             indexes.page-schema-cache)
+                          :current (retain-shared-int-index indexes.current)
+                          :current-avet (retain-shared-int-index indexes.current-avet)
                           :eavt (retain-shared-int-index indexes.eavt)
                           :aevt (retain-shared-int-index indexes.aevt)
                           :avet (retain-shared-int-index indexes.avet)
                           :vaet (retain-shared-int-index indexes.vaet)))
 
 (defn delete-shared-db-int-indexes [indexes: Shared-DB-Int-Indexes]
+  (delete-shared-page-schema-cache indexes.page-schema-cache)
   (delete-shared-int-index indexes.current)
+  (delete-shared-int-index indexes.current-avet)
   (delete-shared-int-index indexes.eavt)
   (delete-shared-int-index indexes.aevt)
   (delete-shared-int-index indexes.avet)
@@ -824,29 +921,27 @@
       (return true)))
   false)
 
-(defn shared-current-index-with-appended-datoms
+(defn shared-current-index-changes-for-appended-datoms
   [base: Shared-DB-Snapshot, appended: []Datom, start-index: int]
-  -> Shared-Int-Index
-  (let [removed (make [dynamic]int)
-        added (make [dynamic]int)]
-    (defer (delete removed))
-    (defer (delete added))
+  -> [removed: [dynamic]int, added: [dynamic]int]
+  (let [out-removed (make [dynamic]int)
+        out-added (make [dynamic]int)]
     (for [datom offset appended]
       (let [log-index (+ start-index offset)]
         (if datom.added
-          (arr.push! added log-index)
+          (arr.push! out-added log-index)
           (let [removed-local false]
             ;; A transaction may assert and retract the same fact. Prefer its
             ;; transaction-local assertion before touching the base snapshot.
-            (let [candidate-index (- (count added) 1)]
+            (let [candidate-index (- (count out-added) 1)]
               (while (>= candidate-index 0)
-                (let [candidate-log-index added[candidate-index]
+                (let [candidate-log-index out-added[candidate-index]
                       candidate-offset (- candidate-log-index start-index)]
                   (when (and (>= candidate-offset 0)
                              (< candidate-offset (count appended))
                              (shared-datom-fact-equal?
                                appended[candidate-offset] datom))
-                    (arr.remove-ordered-at! added candidate-index)
+                    (arr.remove-ordered-at! out-added candidate-index)
                     (set! removed-local true)
                     (set! candidate-index -1))
                   (when (not removed-local)
@@ -856,10 +951,46 @@
                       (shared-current-base-fact-index base datom)]
                 (when (and base-found
                            (not (int-slice-contains?
-                                  (slice removed 0) base-index)))
-                  (arr.push! removed base-index))))))))
+                                  (slice out-removed 0) base-index)))
+                  (arr.push! out-removed base-index))))))))
+    (return out-removed out-added)))
+
+(defn shared-current-index-with-appended-datoms
+  [base: Shared-DB-Snapshot, appended: []Datom, start-index: int]
+  -> Shared-Int-Index
+  (let [[removed added]
+          (shared-current-index-changes-for-appended-datoms
+            base appended start-index)]
+    (defer (delete removed))
+    (defer (delete added))
     (shared-current-index-with-changes
       base.indexes.current (slice removed 0) (slice added 0))))
+
+(defn shared-current-avet-index-with-appended-datoms
+  [base: Shared-DB-Snapshot, appended: []Datom, start-index: int]
+  -> Shared-Int-Index
+  (let [[removed added]
+          (shared-current-index-changes-for-appended-datoms
+            base appended start-index)
+        without-removed
+          (shared-current-index-with-changes
+            base.indexes.current-avet (slice removed 0) ([]int []))
+        sorted-appended
+          (sorted-appended-datom-slice-indexes appended start-index "avet")
+        ordered-added (make [dynamic]int 0 (count added))]
+    (defer (delete removed))
+    (defer (delete added))
+    (defer (delete sorted-appended))
+    (defer (delete ordered-added))
+    (for [index sorted-appended]
+      (when (int-slice-contains? (slice added 0) index)
+        (arr.push! ordered-added index)))
+    (let [out
+            (shared-int-index-with-merged-appended-indexes-direct
+              without-removed base.datoms appended start-index
+              "avet" (slice ordered-added 0))]
+      (delete-shared-int-index without-removed)
+      out)))
 
 (defn shared-db-snapshot-from-db [db: DB, chunk-size: int] -> Shared-DB-Snapshot
   (Shared-DB-Snapshot :datoms (shared-datom-log-from-slice (slice db.datoms 0) chunk-size)
@@ -871,19 +1002,24 @@
 
 (defn shared-db-snapshot-with-appended-datoms-direct [base: Shared-DB-Snapshot, appended: []Datom, start-index: int, new-entities-after-existing: bool] -> Shared-DB-Snapshot
   (Shared-DB-Snapshot :datoms (shared-datom-log-with-appended-slice base.datoms appended)
-                       :indexes (shared-db-int-indexes-with-appended-datom-slice-direct base.indexes base.datoms appended start-index new-entities-after-existing)))
+                       :indexes (shared-db-int-indexes-with-appended-datom-slice-direct base appended start-index new-entities-after-existing)))
 
 (defn shared-db-snapshot-with-transaction-datoms
   [base: Shared-DB-Snapshot, appended: []Datom, start-index: int]
   -> Shared-DB-Snapshot
   ;; EAVT/AEVT/AVET/VAET are history indexes and only gain the transaction's
-  ;; new log positions. Current is the sole index that removes retracted facts.
+  ;; new log positions. Current and its AVET-ordered projection remove
+  ;; retracted facts; the four historical indexes retain every operation.
   (Shared-DB-Snapshot
     :datoms (shared-datom-log-with-appended-slice base.datoms appended)
      :indexes
        (Shared-DB-Int-Indexes
-         :current (shared-current-index-with-appended-datoms
+         :page-schema-cache
+           (shared-page-schema-cache-after-appended base appended)
+          :current (shared-current-index-with-appended-datoms
                      base appended start-index)
+          :current-avet (shared-current-avet-index-with-appended-datoms
+                          base appended start-index)
           :eavt (shared-int-index-with-merged-appended-datom-slice-direct
                   base.indexes.eavt base.datoms appended start-index "eavt")
           :aevt (shared-int-index-with-merged-appended-datom-slice-direct
@@ -894,12 +1030,12 @@
                   base.indexes.vaet base.datoms appended start-index "vaet"))))
 
 (defn shared-db-snapshot-with-append-tx-report [base: Shared-DB-Snapshot, report: Tx-Report] -> Shared-DB-Snapshot
-  (let [indexes (shared-db-int-indexes-with-append-publish-plan base.indexes report.db-before (slice report.tx-data 0) report.publish-plan)]
+  (let [indexes (shared-db-int-indexes-with-append-publish-plan base report.db-before (slice report.tx-data 0) report.publish-plan)]
     (Shared-DB-Snapshot :datoms (shared-datom-log-with-appended-slice base.datoms (slice report.tx-data 0))
                          :indexes indexes)))
 
 (defn shared-db-snapshot-with-append-apply-result [base: Shared-DB-Snapshot, before: DB, applied: Tx-Apply-Result] -> Shared-DB-Snapshot
-  (let [indexes (shared-db-int-indexes-with-append-publish-plan base.indexes before (slice applied.tx-data 0) applied.publish-plan)]
+  (let [indexes (shared-db-int-indexes-with-append-publish-plan base before (slice applied.tx-data 0) applied.publish-plan)]
     (Shared-DB-Snapshot :datoms (shared-datom-log-with-appended-slice base.datoms (slice applied.tx-data 0))
                          :indexes indexes)))
 

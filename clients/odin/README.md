@@ -45,6 +45,11 @@ defer delete(indexed_error)
 index root and may be lower while maintenance is deferred. The older
 `storage_basis_t` name remains a compatibility alias for indexed basis.
 
+Bounded `query_page_db` results include a stable error code. Decode it with
+`query_page_error_code`; the typed values distinguish stale bases, invalid
+requests, unsupported sources or schemas, storage failures, and internal
+failures without matching human-readable error text.
+
 This engine repository keeps a mirror for coordinated ABI checks:
 
 ```sh

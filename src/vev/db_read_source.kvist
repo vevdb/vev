@@ -205,6 +205,108 @@
                   :order order
                   :indexes (db-index-slice db order)))
 
+(defn db-current-avet-index-view [db: DB] -> DB-Index-View
+  (DB-Index-View :kind .Resident
+                  :order .AVET
+                  :indexes (slice db.current-avet 0)))
+
+(defstruct Current-Ordered-Cursor [
+  db: ^DB
+  view: DB-Index-View
+  position: int
+  end: int
+  entries-visited: int
+])
+
+(defn resident-current-ordered-cursor
+  [db: ^DB, start-values: []Value, strict: bool] -> Current-Ordered-Cursor
+  (let [view (db-current-avet-index-view db^)
+        position
+          (if strict
+            (upper-bound-index-view-values db^ view start-values)
+            (lower-bound-index-view-values db^ view start-values))]
+    (Current-Ordered-Cursor :db db
+                            :view view
+                            :position position
+                            :end (db-index-view-count view)
+                            :entries-visited 0)))
+
+(defn current-ordered-cursor-next-resident!
+  [cursor: ^Current-Ordered-Cursor] -> [datom: Datom, found: bool]
+  (when (>= cursor^.position cursor^.end)
+    (return (Datom) false))
+  (let [entry (db-index-view-at cursor^.view cursor^.position)]
+    (set! cursor^.position (+ cursor^.position 1))
+    (set! cursor^.entries-visited (+ cursor^.entries-visited 1))
+    (return cursor^.db^.datoms[entry] true)))
+
+(defstruct Shared-Current-Ordered-Cursor [
+  datoms: ^Shared-Datom-Log
+  index: ^Shared-Int-Index
+  position: int
+  end: int
+  entries-visited: int
+])
+
+(defn shared-current-ordered-bound
+  [datoms: ^Shared-Datom-Log, index: ^Shared-Int-Index,
+   values: []Value, strict: bool]
+  -> [position: int, ok: bool, error: string]
+  (let [low 0
+        high index^.count]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            [entry entry-ok] (shared-int-index-at index^ mid)]
+        (when (not entry-ok)
+          (return low false "q-page shared current AVET index was missing an entry"))
+        (let [[datom datom-ok]
+                (shared-datom-log-at-borrowed datoms^ entry)]
+          (when (not datom-ok)
+            (return low false "q-page shared current AVET index referenced a missing datom"))
+          (let [compare (datom-index-compare-values datom ":avet" values)]
+            (if (or (< compare 0)
+                    (and strict (= compare 0)))
+              (set! low (+ mid 1))
+              (set! high mid))))))
+    (return low true "")))
+
+(defn shared-current-ordered-cursor
+  [datoms: ^Shared-Datom-Log, indexes: ^Shared-DB-Int-Indexes,
+   start-values: []Value, strict: bool]
+  -> [cursor: Shared-Current-Ordered-Cursor, ok: bool, error: string]
+  (let [[position position-ok position-error]
+          (shared-current-ordered-bound
+            datoms (addr indexes^.current-avet) start-values strict)]
+    (when (not position-ok)
+      (return (Shared-Current-Ordered-Cursor) false position-error))
+    (return
+      (Shared-Current-Ordered-Cursor
+        :datoms datoms
+        :index (addr indexes^.current-avet)
+        :position position
+        :end indexes^.current-avet.count
+        :entries-visited 0)
+      true "")))
+
+(defn shared-current-ordered-cursor-next!
+  [cursor: ^Shared-Current-Ordered-Cursor]
+  -> [datom: Datom, found: bool, ok: bool, error: string]
+  (when (>= cursor^.position cursor^.end)
+    (return (Datom) false true ""))
+  (let [[entry entry-ok]
+          (shared-int-index-at cursor^.index^ cursor^.position)]
+    (when (not entry-ok)
+      (return (Datom) false false
+        "q-page shared current AVET index was missing an entry"))
+    (let [[current-datom datom-ok]
+            (shared-datom-log-at-borrowed cursor^.datoms^ entry)]
+      (when (not datom-ok)
+        (return (Datom) false false
+          "q-page shared current AVET index referenced a missing datom"))
+      (set! cursor^.position (+ cursor^.position 1))
+      (set! cursor^.entries-visited (+ cursor^.entries-visited 1))
+      (return current-datom true true ""))))
+
 (defn db-index-view-from-sqlite-cursor [order: Public-Index-Order, cursor: ^SQLite-Index-Cursor] -> DB-Index-View
   (DB-Index-View :kind .SQLite-Cursor
                   :order order

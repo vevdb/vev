@@ -51,10 +51,12 @@ basis from the last immutable checkpoint plus the committed novelty tail.
 Raw resident persistence now publishes four small immutable delta runs against
 the prior root instead of serializing the complete DB indexes. Its public root
 basis therefore still advances on every raw transaction. StoreReport resident
-transactions retain their existing checkpoint-plus-novelty behavior. Both
-representations read the same canonical log and total index orders. Compaction
-and automatic checkpoint policy remain derived maintenance; no user
-transactions are batched and acknowledgement is not asynchronous.
+transactions publish the equivalent delta-root plan atomically with each
+commit, while nonresident StoreReport transactions use the hard-bounded
+checkpoint-plus-novelty path. All representations read the same canonical log
+and total index orders. Compaction and automatic checkpoint policy remain
+derived maintenance; no user transactions are batched and acknowledgement is
+not asynchronous.
 
 Resident connections cache the canonical-write and index-write prepared
 statement sets and finalize them when the connection closes.

@@ -5,7 +5,15 @@
 
 #include "vev_sqlite.h"
 
-#define VEV_ABI_VERSION 2u
+#define VEV_ABI_VERSION 3u
+
+/* Stable :error-code keywords returned by vev_db_query_page_value. */
+#define VEV_QUERY_PAGE_ERROR_NONE ":none"
+#define VEV_QUERY_PAGE_ERROR_STALE_BASIS ":stale-basis"
+#define VEV_QUERY_PAGE_ERROR_INVALID_REQUEST ":invalid-request"
+#define VEV_QUERY_PAGE_ERROR_UNSUPPORTED ":unsupported"
+#define VEV_QUERY_PAGE_ERROR_STORAGE ":storage-error"
+#define VEV_QUERY_PAGE_ERROR_INTERNAL ":internal-error"
 
 #ifdef __cplusplus
 extern "C" {
@@ -489,6 +497,14 @@ vev_value_handle_t vev_db_query_value_with_inputs(
     vev_db_t db,
     const char *query_text,
     const char *inputs_text);
+vev_value_handle_t vev_db_query_page_value(
+    vev_db_t db,
+    const char *query_text,
+    const char *index_attr,
+    const char *prefix_text,
+    const char *after_text,
+    bool has_after,
+    int64_t limit);
 vev_value_handle_t vev_db_query_prepared_value_with_inputs(
     vev_db_t db,
     vev_prepared_query_t query,

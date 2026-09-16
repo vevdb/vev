@@ -3,6 +3,41 @@ package vev
 import c "core:c"
 import "core:fmt"
 import "core:strings"
+
+sqlite_latest_entity_attr_value_at_basis_raw :: proc(handle: rawptr, entity: u64, attr: string, basis_tx: u64) -> (string, bool, bool, bool, string) {
+    if handle == nil {
+        return "", false, false, false, "sqlite handle was nil"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := "SELECT value_text, added FROM vev_datoms INDEXED BY vev_datoms_entity_attr_latest WHERE e = ? AND a = ? AND tx <= ? ORDER BY tx DESC, id DESC LIMIT 1"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return "", false, false, false, "failed to allocate sqlite current schema SQL text"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return "", false, false, false, sqlite_error_text(db, "sqlite prepare current schema lookup failed")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    if sqlite3_bind_int64(stmt, 1, i64(entity)) != SQLITE_OK ||
+       sqlite_bind_text_borrowed(stmt, 2, attr) != SQLITE_OK ||
+       sqlite3_bind_int64(stmt, 3, i64(basis_tx)) != SQLITE_OK {
+        return "", false, false, false, sqlite_error_text(db, "sqlite bind current schema lookup failed")
+    }
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_DONE {
+        return "", false, false, true, ""
+    }
+    if rc != SQLITE_ROW {
+        return "", false, false, false, sqlite_error_text(db, "sqlite current schema lookup failed")
+    }
+    value, value_ok := sqlite_column_text_owned(stmt, 0)
+    if !value_ok {
+        return "", false, false, false, "sqlite current schema row had null value"
+    }
+    return value, sqlite3_column_int(stmt, 1) != 0, true, true, ""
+}
 sqlite_insert_datom_raw :: proc(handle: rawptr, log_index: i64, e: u64, a: string, value_text: string, value_entity: i64, tx: u64, added: bool) -> (bool, string) {
     if handle == nil {
         return false, "sqlite handle was nil"

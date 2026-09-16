@@ -14,6 +14,12 @@ It provides:
 - index and history reads
 - typed transaction builders
 - explicit durable maintenance
+- bounded unique composite-key paging (`vev_db_query_page_value`)
+
+The page value always contains `:ok`, stable `:error-code`, and separate
+human-readable `:error` fields. The error-code keyword constants are declared
+as `VEV_QUERY_PAGE_ERROR_*` in `vev.h`; callers must not classify failures by
+matching the diagnostic text.
 
 ## Build
 

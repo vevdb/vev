@@ -1,0 +1,1946 @@
+(package vev-tests)
+
+(import fmt "core:fmt")
+(import os "core:os")
+(import arr "kvist:arr")
+(import t "kvist:test")
+(import vev "../vev")
+
+(defn remove-page-sqlite-files [path: string]
+  (os.remove path)
+  (let [wal (fmt.aprintf "%s-wal" path) :defer
+        shm (fmt.aprintf "%s-shm" path) :defer]
+    (os.remove wal)
+    (os.remove shm)))
+
+(defn query-page-map-value [m: vev.Value, key: string]
+  -> [value: vev.Value, ok: bool]
+  (vev.map-get-value m (vev.value-keyword key)))
+
+(t.deftest q-page-owned-value-exposes-stable-error-code-separately-from-text
+  (defer (free_all context.allocator))
+  (let [page
+          (vev.query-page-error
+            .StaleBasis "diagnostic text may change without changing code")
+        value (vev.query-page-owned-value page)
+        [code code-ok] (query-page-map-value value ":error-code")
+        [error error-ok] (query-page-map-value value ":error")]
+    (defer (vev.delete-query-page page))
+    (defer (vev.delete-owned-value value))
+    (t.is code-ok)
+    (t.is (= code.kind .Keyword))
+    (t.is (= code.text ":stale-basis"))
+    (t.is error-ok)
+    (t.is (= error.text "diagnostic text may change without changing code"))))
+
+(t.deftest q-page-classifies-null-sqlite-read-handle-as-storage-error
+  (defer (free_all context.allocator))
+  (let [snapshot
+          (vev.SQLite-DB-Snapshot
+            :indexes (vev.SQLite-Index-Snapshot :handle nil :page-size 4)
+            :basis-tx vev.tx-partition-base)
+        source (vev.sqlite-db-read-source (addr snapshot))
+        query
+          (vev.datalog
+            [:find ?entry ?key
+             :where [?entry :entry/page-key ?key]])
+        request
+          (vev.query-page-request
+            ":entry/page-key"
+            ([]vev.Value [(vev.value-string "group-a")]) 1)
+        page (vev.q-page-query-source source query request)]
+    (defer (vev.delete-query-page page))
+    (defer (vev.delete-query-page-request request))
+    (defer (vev.delete-query-shallow query))
+    (t.is (not page.result.ok))
+    (t.is (= page.error-code .StorageError))))
+
+(t.deftest q-page-classifies-sqlite-root-lookup-prepare-failure-as-storage-error
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-root-prepare-error.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)
+          schema
+            (vev.transact-sqlite-text
+              (addr store)
+              "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}]")]
+      (t.is store-ok store-error)
+      (t.is schema.ok schema.error)
+      (let [snapshot
+              (vev.SQLite-DB-Snapshot
+                :indexes
+                  (vev.SQLite-Index-Snapshot
+                    :handle store.handle :page-size 4)
+                :basis-tx schema.tx)
+            source (vev.sqlite-db-read-source (addr snapshot))
+            corrupt-rc
+              (vev.sqlite-app-exec-raw
+                store.handle "DROP TABLE vev_index_roots")
+            query
+              (vev.datalog
+                [:find ?entry ?key
+                 :where [?entry :entry/page-key ?key]])
+            request
+              (vev.query-page-request
+                ":entry/page-key"
+                ([]vev.Value [(vev.value-string "group-a")]) 1)
+            page (vev.q-page-query-source source query request)]
+        (defer (vev.delete-query-page page))
+        (defer (vev.delete-query-page-request request))
+        (defer (vev.delete-query-shallow query))
+        (t.is (= corrupt-rc 0))
+        (t.is (not page.result.ok))
+        (t.is (= page.error-code .StorageError)))
+      (vev.delete-tx-report-shallow schema)
+      (vev.close-sqlite-conn store))))
+
+(t.deftest sqlite-basis-root-status-separates-missing-from-read-failure
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-root-status.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)
+          written
+            (vev.transact-sqlite-text
+              (addr store) "[{:db/id 1 :entry/value 1}]")
+          [missing-row missing-found missing-ok missing-error]
+            (vev.sqlite-index-root-row-id-at-basis-status
+              store.handle (+ written.tx 100))
+          [nil-row nil-found nil-ok nil-error]
+            (vev.sqlite-index-root-row-id-at-basis-status
+              nil written.tx)
+          [missing-snapshot snapshot-found snapshot-ok snapshot-error]
+            (vev.sqlite-open-db-snapshot-at-basis-status
+              path (+ written.tx 100) 4)]
+      (discard missing-row)
+      (discard nil-row)
+      (discard missing-snapshot)
+      (t.is store-ok store-error)
+      (t.is written.ok written.error)
+      (t.is missing-ok missing-error)
+      (t.is (not missing-found))
+      (t.is (= missing-error ""))
+      (t.is (not nil-ok))
+      (t.is (not nil-found))
+      (t.is (> (count nil-error) 0))
+      (t.is snapshot-ok snapshot-error)
+      (t.is (not snapshot-found))
+      (vev.delete-tx-report-shallow written)
+      (vev.close-sqlite-conn store))))
+
+(defn page-test-db [] -> vev.DB
+  (let [conn (vev.create-conn)
+        tuple-schema
+          (vev.tuple-attrs-schema-tx-from
+            100 ":entry/page-key"
+            ([]string [":entry/group" ":entry/revision" ":entry/id"]))
+        schema-report
+          (vev.transact-tx-data (addr conn) (slice tuple-schema 0))]
+    (delete tuple-schema)
+    (when (not schema-report.ok)
+      (panic schema-report.error))
+    (let [unique-report
+            (vev.transact
+              (addr conn)
+              [[:db/add 100 :db/unique :db.unique/value]
+               [:db/add 100 :db/cardinality :db.cardinality/one]
+               [:db/add 101 :db/ident :entry/group]
+               [:db/add 101 :db/cardinality :db.cardinality/one]
+               [:db/add 102 :db/ident :entry/revision]
+               [:db/add 102 :db/cardinality :db.cardinality/one]
+               [:db/add 103 :db/ident :entry/id]
+               [:db/add 103 :db/cardinality :db.cardinality/one]])]
+      (when (not unique-report.ok)
+        (panic unique-report.error)))
+    conn.db))
+
+(defn page-test-conn [] -> vev.Conn
+  (let [conn (vev.create-conn)
+        tuple-schema
+          (vev.tuple-attrs-schema-tx-from
+            100 ":entry/page-key"
+            ([]string [":entry/group" ":entry/revision" ":entry/id"]))
+        schema-report
+          (vev.transact-tx-data (addr conn) (slice tuple-schema 0))]
+    (delete tuple-schema)
+    (when (not schema-report.ok)
+      (panic schema-report.error))
+    (let [unique-report
+            (vev.transact
+              (addr conn)
+              [[:db/add 100 :db/unique :db.unique/value]
+               [:db/add 100 :db/cardinality :db.cardinality/one]
+               [:db/add 101 :db/ident :entry/group]
+               [:db/add 101 :db/cardinality :db.cardinality/one]
+               [:db/add 102 :db/ident :entry/revision]
+               [:db/add 102 :db/cardinality :db.cardinality/one]
+               [:db/add 103 :db/ident :entry/id]
+               [:db/add 103 :db/cardinality :db.cardinality/one]])]
+      (when (not unique-report.ok)
+        (panic unique-report.error)))
+    conn))
+
+(defn transact-page-entry!
+  [conn: ^vev.Conn, entity: u64, group: string, revision: i64, id: string]
+  (let [report
+          (vev.transact-ops
+            conn
+            ([]vev.Tx-Op
+              [(vev.tx-add entity ":entry/group" (vev.value-string group))
+               (vev.tx-add entity ":entry/revision" (vev.value-int revision))
+               (vev.tx-add entity ":entry/id" (vev.value-string id))]))]
+    (when (not report.ok)
+      (panic report.error))))
+
+(t.deftest sqlite-publishes-current-avet-delta-lineage-per-basis
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-current-root.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)]
+      (t.is store-ok store-error)
+      (let [schema
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/revision :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                  {:db/id 101 :db/ident :entry/group :db/cardinality :db.cardinality/one}
+                  {:db/id 102 :db/ident :entry/revision :db/cardinality :db.cardinality/one}
+                  {:db/id 103 :db/ident :entry/id :db/cardinality :db.cardinality/one}]")
+            first
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 1 :entry/group \"group-a\" :entry/revision 1 :entry/id \"a\"}]")
+            changed
+              (vev.transact-sqlite-text
+                (addr store)
+                "[[:db/add 1 :entry/revision 2]]")
+            prefix
+              (vev.value-vector
+                ([]vev.Value
+                  [(vev.value-string (vev.string-owned "group-a"))]))
+            start-values
+              ([]vev.Value [(vev.value-keyword ":entry/page-key") prefix])
+            [old-root old-root-ok old-root-error]
+              (vev.sqlite-open-current-ordered-cursor-handle-at-basis
+                store.handle first.tx start-values false 4)
+            [new-root new-root-ok new-root-error]
+              (vev.sqlite-open-current-ordered-cursor-handle-at-basis
+                store.handle changed.tx start-values false 4)]
+        (defer (vev.delete-owned-value prefix))
+        (t.is schema.ok schema.error)
+        (t.is first.ok first.error)
+        (t.is changed.ok changed.error)
+        (t.is old-root-ok old-root-error)
+        (t.is new-root-ok new-root-error)
+        (when (and old-root-ok new-root-ok)
+          (let [[old old-found old-ok old-error]
+                  (vev.sqlite-current-ordered-cursor-next! (addr old-root))
+                [new new-found new-ok new-error]
+                  (vev.sqlite-current-ordered-cursor-next! (addr new-root))]
+            (defer (vev.delete-owned-datom old))
+            (defer (vev.delete-owned-datom new))
+            (t.is old-ok old-error)
+            (t.is old-found)
+            (t.is (= old.e 1))
+            (t.is (= old.v.items[1].int-value 1))
+            (t.is new-ok new-error)
+            (t.is new-found)
+            (t.is (= new.e 1))
+            (t.is (= new.v.items[1].int-value 2))
+            (t.is (> new-root.runs-opened old-root.runs-opened))
+            (t.is (<= old-root.entries-visited
+                      (+ 2 (* 4 old-root.runs-opened))))
+            (t.is (<= new-root.entries-visited
+                      (+ 2 (* 4 new-root.runs-opened))))))
+        (when old-root-ok
+          (vev.close-sqlite-current-ordered-cursor old-root))
+        (when new-root-ok
+          (vev.close-sqlite-current-ordered-cursor new-root))
+        (vev.delete-tx-report-shallow schema)
+        (vev.delete-tx-report-shallow first)
+        (vev.delete-tx-report-shallow changed))
+      (vev.close-sqlite-conn store))))
+
+(t.deftest sqlite-current-cursor-rejects-a-basis-without-current-root
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-missing-current-root.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)]
+      (t.is store-ok store-error)
+      (let [written
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                  {:db/id 1 :entry/group \"group-a\" :entry/id \"a\"}]")
+            [roots roots-ok roots-error]
+              (vev.sqlite-index-root-set-at-basis store.handle written.tx)]
+        (t.is written.ok written.error)
+        (t.is roots-ok roots-error)
+        ;; Publish the shape used by a pre-current-AVET database: a newer root
+        ;; row at the same exact basis with only the four historical indexes.
+        ;; Use the raw legacy seam deliberately: ordinary publication preserves
+        ;; every normalized page, including :current-avet.
+        (let [[_legacy-row legacy-ok legacy-error]
+                (vev.sqlite-insert-index-root-raw
+                  store.handle written.tx
+                  roots.eavt.root-id roots.aevt.root-id
+                  roots.avet.root-id roots.vaet.root-id)
+              start-values
+                ([]vev.Value [(vev.value-keyword ":entry/group")])
+              [cursor cursor-code cursor-ok cursor-error]
+                (vev.sqlite-open-current-ordered-cursor-handle-at-basis-typed
+                  store.handle written.tx start-values false 4)]
+          (discard cursor)
+          (t.is legacy-ok legacy-error)
+          (t.is (not cursor-ok))
+          (t.is (= cursor-code .Unavailable))
+          (t.is (= cursor-error
+                   "q-page unavailable: SQLite basis has no persisted current AVET root; publish a full checkpoint"))
+          (let [[snapshot snapshot-ok snapshot-error]
+                  (vev.sqlite-open-db-snapshot-at-basis path written.tx 4)]
+            (t.is snapshot-ok snapshot-error)
+            (when snapshot-ok
+              (let [source (vev.sqlite-db-read-source (addr snapshot))
+                    query
+                      (vev.datalog
+                        [:find ?entry ?key
+                         :where [?entry :entry/page-key ?key]])
+                    request
+                      (vev.query-page-request
+                        ":entry/page-key"
+                        ([]vev.Value [(vev.value-string "group-a")]) 1)
+                    page (vev.q-page-query-source source query request)]
+                (defer (vev.delete-query-page page))
+                (defer (vev.delete-query-page-request request))
+                (defer (vev.delete-query-shallow query))
+                (t.is (not page.result.ok))
+                (t.is (= page.error-code .Unsupported)))
+              (vev.close-sqlite-db-snapshot snapshot))))
+        (vev.delete-tx-report-shallow written))
+      (vev.close-sqlite-conn store))))
+
+(t.deftest sqlite-same-basis-maintenance-and-root-copy-preserve-current-page
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-maintenance-current-root.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)]
+      (t.is store-ok store-error)
+      (let [written
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 1 :entry/group \"group-a\"}]")
+            [roots roots-ok roots-error]
+              (vev.sqlite-index-root-set-at-basis store.handle written.tx)
+            [current-root current-manifest current-found current-ok current-error]
+              (vev.sqlite-index-root-page-at-basis-raw
+                store.handle ":current-avet" written.tx)]
+        (t.is written.ok written.error)
+        (t.is roots-ok roots-error)
+        (t.is current-ok current-error)
+        (t.is current-found)
+        ;; Manifest maintenance republishes a newer root row at the same basis.
+        (let [[maintenance-ok maintenance-error]
+                (vev.sqlite-republish-latest-index-root-with-manifest
+                  store.handle written.tx ":eavt"
+                  roots.eavt.root-id roots.eavt.manifest-id)
+              [maintained-root maintained-manifest maintained-found maintained-ok maintained-error]
+                (vev.sqlite-index-root-page-at-basis-raw
+                  store.handle ":current-avet" written.tx)]
+          (t.is maintenance-ok maintenance-error)
+          (t.is maintained-ok maintained-error)
+          (t.is maintained-found)
+          (t.is (= maintained-root current-root))
+          (t.is (= maintained-manifest current-manifest)))
+        ;; Root-copy has the same same-basis hazard and must preserve the page.
+        (let [[_copied-row copied-ok copied-error]
+                (vev.sqlite-republish-latest-index-root-set!
+                  store.handle written.tx)
+              [copied-root copied-manifest copied-found copied-page-ok copied-page-error]
+                (vev.sqlite-index-root-page-at-basis-raw
+                  store.handle ":current-avet" written.tx)
+              start-values
+                ([]vev.Value [(vev.value-keyword ":entry/group")])
+              [cursor cursor-ok cursor-error]
+                (vev.sqlite-open-current-ordered-cursor-handle-at-basis
+                  store.handle written.tx start-values false 4)]
+          (t.is copied-ok copied-error)
+          (t.is copied-page-ok copied-page-error)
+          (t.is copied-found)
+          (t.is (= copied-root current-root))
+          (t.is (= copied-manifest current-manifest))
+          (t.is cursor-ok cursor-error)
+          (when cursor-ok
+            (let [[datom found next-ok next-error]
+                    (vev.sqlite-current-ordered-cursor-next! (addr cursor))]
+              (defer (vev.delete-owned-datom datom))
+              (t.is next-ok next-error)
+              (t.is found)
+              (t.is (= datom.e 1)))
+            (vev.close-sqlite-current-ordered-cursor cursor)))
+        (vev.delete-tx-report-shallow written))
+      (vev.close-sqlite-conn store))))
+
+(t.deftest sqlite-maintenance-propagates-corrupt-current-page-without-publishing
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-corrupt-current-root.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)]
+      (t.is store-ok store-error)
+      (let [written
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                  {:db/id 1 :entry/group \"group-a\" :entry/id \"a\"}]")
+            [roots roots-ok roots-error]
+              (vev.sqlite-index-root-set-at-basis store.handle written.tx)
+            [current-root _manifest current-found current-ok current-error]
+              (vev.sqlite-index-root-page-at-basis-raw
+                store.handle ":current-avet" written.tx)
+            [snapshot snapshot-ok snapshot-error]
+              (vev.sqlite-open-db-snapshot-at-basis path written.tx 4)
+            [_before-basis before-row before-ok before-error]
+              (vev.sqlite-latest-index-root-identity-raw store.handle)]
+        (t.is written.ok written.error)
+        (t.is roots-ok roots-error)
+        (t.is current-ok current-error)
+        (t.is current-found)
+        (t.is snapshot-ok snapshot-error)
+        (t.is before-ok before-error)
+        ;; Simulate disk/legacy corruption which bypasses foreign keys. Missing
+        ;; is only a supported state when the page itself is absent.
+        (let [sql
+                (fmt.aprintf
+                  "PRAGMA foreign_keys=OFF; DELETE FROM vev_index_chunks WHERE chunk_id=%d;"
+                  current-root)
+              :defer
+              corrupt-rc (vev.sqlite-app-exec-raw store.handle sql)
+              start-values
+                ([]vev.Value [(vev.value-keyword ":entry/group")])
+              [corrupt-cursor corrupt-code corrupt-ok corrupt-error]
+                (vev.sqlite-open-current-ordered-cursor-handle-at-basis-typed
+                  store.handle written.tx start-values false 4)
+              [maintenance-ok maintenance-error]
+                (vev.sqlite-republish-latest-index-root-with-manifest
+                  store.handle written.tx ":eavt"
+                  roots.eavt.root-id roots.eavt.manifest-id)
+              [_after-basis after-row after-ok after-error]
+                (vev.sqlite-latest-index-root-identity-raw store.handle)]
+          (t.is (= corrupt-rc 0))
+          (discard corrupt-cursor)
+          (t.is (not corrupt-ok))
+          (t.is (= corrupt-code .StorageError))
+          (t.is (> (count corrupt-error) 0))
+          (when snapshot-ok
+            ;; Use the corrupted writer handle as an injected read seam while
+            ;; retaining the otherwise valid immutable snapshot metadata.
+            (let [corrupt-view snapshot]
+              (set! corrupt-view.indexes.handle store.handle)
+              (let [source (vev.sqlite-db-read-source (addr corrupt-view))
+                  query
+                    (vev.datalog
+                      [:find ?entry ?key
+                       :where [?entry :entry/page-key ?key]])
+                  request
+                    (vev.query-page-request
+                      ":entry/page-key"
+                      ([]vev.Value [(vev.value-string "group-a")]) 1)
+                  page (vev.q-page-query-source source query request)]
+              (defer (vev.delete-query-page page))
+              (defer (vev.delete-query-page-request request))
+              (defer (vev.delete-query-shallow query))
+              (t.is (not page.result.ok))
+              (t.is (= page.error-code .StorageError)))))
+          (t.is (not maintenance-ok))
+          (t.is (= maintenance-error
+                   "sqlite current AVET root page references a missing chunk"))
+          (t.is after-ok after-error)
+          (t.is (= after-row before-row)))
+        (when snapshot-ok
+          (vev.close-sqlite-db-snapshot snapshot))
+        (vev.delete-tx-report-shallow written))
+      (vev.close-sqlite-conn store))))
+
+(t.deftest q-page-merges-ordinary-sqlite-log-tail-with-exact-as-of
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-log-tail.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-store path)
+          schema
+            (vev.transact-store-report-text
+              (addr store)
+              "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/revision :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                {:db/id 101 :db/ident :entry/group :db/cardinality :db.cardinality/one}
+                {:db/id 102 :db/ident :entry/revision :db/cardinality :db.cardinality/one}
+                {:db/id 103 :db/ident :entry/id :db/cardinality :db.cardinality/one}]")
+          first
+            (vev.transact-store-report-text
+              (addr store)
+              "[{:db/id 1 :entry/group \"group-a\" :entry/revision 1 :entry/id \"a\"}
+                {:db/id 2 :entry/group \"group-a\" :entry/revision 2 :entry/id \"b\"}]")
+          second
+            (vev.transact-store-report-text
+              (addr store)
+              "[[:db/add 1 :entry/revision 3]
+                {:db/id 3 :entry/group \"group-a\" :entry/revision 2 :entry/id \"c\"}]")
+          [source source-ok source-error]
+            (vev.store-db-read-source (addr second.db-after))
+          query
+            (vev.datalog
+              [:find ?entry ?key
+               :where [?entry :entry/page-key ?key]])
+          prefix ([]vev.Value [(vev.value-string "group-a")])
+          first-request
+            (vev.query-page-request ":entry/page-key" prefix 2)
+          first-page
+            (vev.q-page-query-source source query first-request)]
+      (t.is store-ok store-error)
+      (t.is schema.ok schema.error)
+      (t.is first.ok first.error)
+      (t.is second.ok second.error)
+      (t.is source-ok source-error)
+      (t.is (= source.kind .SQLite-Datom-Log-Overlay))
+      (t.is first-page.result.ok first-page.result.error)
+      (t.is (= (count first-page.result.rows) 2))
+      (t.is (= first-page.result.rows[0].values[0].entity 2))
+      (t.is (= first-page.result.rows[1].values[0].entity 3))
+      (t.is first-page.has-next-key)
+      (t.is (= first-page.stats.generic-materialization-steps 0))
+      (t.is (<= first-page.stats.index-entries-visited
+                (+ source.overlay-log^.count 3)))
+      (let [after (vev.value-owned first-page.next-key)
+            second-request
+              (vev.query-page-request-after
+                ":entry/page-key" prefix after 2)
+            second-page
+              (vev.q-page-query-source source query second-request)]
+        (t.is second-page.result.ok second-page.result.error)
+        (t.is (= (count second-page.result.rows) 1))
+        (t.is (= second-page.result.rows[0].values[0].entity 1))
+        (t.is (not second-page.has-next-key))
+        (vev.delete-query-page second-page)
+        (vev.delete-query-page-request second-request)
+        (vev.delete-owned-value after))
+      ;; Pinning the later overlay DB to the first tail transaction excludes
+      ;; both the rematerialized tuple and the newly inserted tied row.
+      (let [as-of-first (vev.as-of-store-db (addr second.db-after) first.tx)
+            [as-of-source as-of-source-ok as-of-source-error]
+              (vev.store-db-read-source (addr as-of-first))
+            as-of-request
+              (vev.query-page-request ":entry/page-key" prefix 4)
+            as-of-page
+              (vev.q-page-query-source as-of-source query as-of-request)]
+        (t.is as-of-source-ok as-of-source-error)
+        (t.is as-of-page.result.ok as-of-page.result.error)
+        (t.is (= (count as-of-page.result.rows) 2))
+        (t.is (= as-of-page.result.rows[0].values[0].entity 1))
+        (t.is (= as-of-page.result.rows[1].values[0].entity 2))
+        (vev.delete-query-page as-of-page)
+        (vev.delete-query-page-request as-of-request)
+        (vev.close-store-db as-of-first))
+      (vev.delete-query-page first-page)
+      (vev.delete-query-page-request first-request)
+      (vev.delete-query-shallow query)
+      (vev.delete-store-tx-report second)
+      (vev.delete-store-tx-report first)
+      (vev.delete-store-tx-report schema)
+      (vev.close-store store))))
+
+(t.deftest q-page-retained-sqlite-overlay-survives-root-reclamation
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-retained-overlay-reclaim.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-store path)
+          schema
+            (vev.transact-store-report-text
+              (addr store)
+              "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/revision :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                {:db/id 101 :db/ident :entry/group :db/cardinality :db.cardinality/one}
+                {:db/id 102 :db/ident :entry/revision :db/cardinality :db.cardinality/one}
+                {:db/id 103 :db/ident :entry/id :db/cardinality :db.cardinality/one}]")
+          entries
+            (vev.transact-store-report-text
+              (addr store)
+              "[{:db/id 1 :entry/group \"group-a\" :entry/revision 1 :entry/id \"a\"}
+                {:db/id 2 :entry/group \"group-a\" :entry/revision 2 :entry/id \"b\"}]")
+          retained (vev.retain-store-db entries.db-after)
+          [reclaimed reclaim-ok reclaim-error]
+            (vev.reclaim-store-indexes! (addr store) false)]
+      (discard reclaimed)
+      (t.is store-ok store-error)
+      (t.is schema.ok schema.error)
+      (t.is entries.ok entries.error)
+      (t.is reclaim-ok reclaim-error)
+      (let [[source source-ok source-error]
+              (vev.store-db-read-source (addr retained))
+            query
+              (vev.datalog
+                [:find ?entry ?key
+                 :where [?entry :entry/page-key ?key]])
+            request
+              (vev.query-page-request
+                ":entry/page-key"
+                ([]vev.Value [(vev.value-string "group-a")]) 1)
+            first (vev.q-page-query-source source query request)]
+        (defer (vev.delete-query-page first))
+        (defer (vev.delete-query-page-request request))
+        (defer (vev.delete-query-shallow query))
+        (t.is source-ok source-error)
+        (t.is (vev.query-page-shared-overlay? source))
+        (t.is first.result.ok first.result.error)
+        (t.is (= (count first.result.rows) 1))
+        (t.is (= first.result.rows[0].values[0].entity 1))
+        (t.is first.has-next-key)
+        (let [next-request
+                (vev.query-page-request-after
+                  ":entry/page-key"
+                  ([]vev.Value [(vev.value-string "group-a")])
+                  first.next-key 1)
+              second (vev.q-page-query-source source query next-request)]
+          (defer (vev.delete-query-page second))
+          (defer (vev.delete-query-page-request next-request))
+          (t.is second.result.ok second.result.error)
+          (t.is (= (count second.result.rows) 1))
+          (t.is (= second.result.rows[0].values[0].entity 2))
+          (t.is (not second.has-next-key))))
+      (vev.close-store-db retained)
+      (vev.delete-store-tx-report entries)
+      (vev.delete-store-tx-report schema)
+      (vev.close-store store))))
+
+(t.deftest q-page-rejects-an-oversized-shared-overlay-before-scanning
+  (defer (free_all context.allocator))
+  (let [conn (page-test-conn)]
+    (transact-page-entry! (addr conn) 1 "group-a" 1 "a")
+    (let [shared (vev.shared-db-snapshot-from-db conn.db 2)
+          ops (make [dynamic]vev.Tx-Op 0
+                    (+ vev.sqlite-index-novelty-datom-hard-limit 1))]
+      (for [index (arr.range 0 (+ vev.sqlite-index-novelty-datom-hard-limit 1))]
+        (arr.push! ops
+          (vev.tx-add (u64 (+ index 1000)) ":entry/noise"
+                      (vev.value-int (i64 index)))))
+      (let [source
+              (vev.shared-tx-ops-overlay-db-read-source
+                (addr shared.datoms) (addr shared.indexes) (addr ops)
+                (+ (vev.db-basis-tx conn.db) 1))
+            query
+              (vev.datalog
+                [:find ?entry ?key
+                 :where [?entry :entry/page-key ?key]])
+            request
+              (vev.query-page-request
+                ":entry/page-key"
+                ([]vev.Value [(vev.value-string "group-a")]) 1)
+            page (vev.q-page-query-source source query request)]
+        (t.is (not page.result.ok))
+        (t.is (= page.result.error
+                 "q-page overlay exceeds the bounded candidate limit"))
+        (t.is (= page.stats.index-entries-visited 0))
+        (vev.delete-query-page page)
+        (vev.delete-query-page-request request)
+        (vev.delete-query-shallow query))
+      (vev.delete-owned-tx-ops ops)
+      (vev.delete-shared-db-snapshot shared))))
+
+(t.deftest sqlite-log-only-commit-rejects-an-oversized-novelty-tail-atomically
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-tail-hard-bound.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-store path)
+          seed
+            (vev.transact-store-report-text
+              (addr store) "[{:db/id 1 :entry/name \"seed\"}]")
+          [before-count before-ok before-error] (vev.store-tx-count (addr store))
+          oversized (make [dynamic]vev.Tx-Data 0
+                          (+ vev.sqlite-index-novelty-datom-hard-limit 1))]
+      (t.is store-ok store-error)
+      (t.is seed.ok seed.error)
+      (t.is before-ok before-error)
+      (for [index (arr.range 0 (+ vev.sqlite-index-novelty-datom-hard-limit 1))]
+        (arr.push! oversized
+          (vev.add (u64 (+ index 10)) ":entry/value" (vev.value-int (i64 index)))))
+      (let [group (vev.store-tx-data-group (slice oversized 0))
+            groups ([]vev.Store-Tx-Data-Group [group])
+            [reports reports-ok reports-error]
+              (vev.transact-store-report-logical-tx-data-groups
+                (addr store) groups)
+            [after-count after-ok after-error] (vev.store-tx-count (addr store))]
+        (t.is (not reports-ok))
+        (t.is (= reports-error
+                 "SQLite log-only transaction exceeds the bounded novelty tail; checkpoint or split the transaction"))
+        (t.is (= (count reports) 0))
+        (t.is after-ok after-error)
+        (t.is (= after-count before-count))
+        (vev.delete-store-tx-reports reports)
+        (vev.delete-store-tx-data-group group))
+      ;; `vev.add` borrows its literal attribute; the owned group above cloned
+      ;; the input before the call.
+      (delete oversized)
+      (vev.delete-store-tx-report seed)
+      (vev.close-store store))))
+
+(t.deftest sqlite-read-only-reopen-rejects-a-legacy-oversized-tail-boundedly
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-legacy-tail-hard-bound.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    ;; Simulate a database written by an older process, or a crash before that
+    ;; process could checkpoint.  Raw SQL deliberately bypasses the new writer
+    ;; admission check; the reader must still stop after limit+1 indexed rows.
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)]
+      (t.is store-ok store-error)
+      (let [seed
+              (vev.transact-sqlite-text
+                (addr store) "[{:db/id 1 :entry/name \"seed\"}]")
+            legacy-tx (+ seed.tx 1)
+            sql
+              (fmt.aprintf
+                "INSERT INTO vev_transactions(tx) VALUES (%d); WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<%d) INSERT INTO vev_datoms(log_index,e,a,value_text,value_entity,tx,added) SELECT x+100000,x+1000,':legacy/value','0',-1,%d,1 FROM n;"
+                legacy-tx vev.sqlite-index-novelty-datom-hard-limit legacy-tx)
+            :defer
+            inject-rc (vev.sqlite-app-exec-raw store.handle sql)
+            [bounded-count exceeds count-ok count-error]
+              (vev.sqlite-index-tail-datom-count-bounded-raw
+                store.handle (u64 vev.sqlite-index-novelty-datom-hard-limit))]
+        (t.is seed.ok seed.error)
+        (t.is (= inject-rc 0))
+        (t.is count-ok count-error)
+        (t.is (= bounded-count
+                 (u64 vev.sqlite-index-novelty-datom-hard-limit)))
+        (t.is exceeds)
+        (vev.delete-tx-report-shallow seed))
+      (vev.close-sqlite-conn store))
+    (let [[reopened reopened-ok reopened-error]
+            (vev.open-store-read-only path)
+          [snapshot snapshot-ok snapshot-error]
+            (vev.store-db (addr reopened))]
+      (t.is reopened-ok reopened-error)
+      (t.is (not snapshot-ok))
+      (t.is (= snapshot-error vev.sqlite-novelty-tail-bound-error))
+      (vev.close-store-db snapshot)
+      (vev.close-store reopened))))
+
+(t.deftest sqlite-current-avet-seek-is-bounded-across-history-and-reclamation
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-current-bounded.sqlite"
+        old-basis: u64 0
+        latest-basis: u64 0]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)]
+      (t.is store-ok store-error)
+      (let [schema
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/revision :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                  {:db/id 101 :db/ident :entry/group :db/cardinality :db.cardinality/one}
+                  {:db/id 102 :db/ident :entry/revision :db/cardinality :db.cardinality/one}
+                  {:db/id 103 :db/ident :entry/id :db/cardinality :db.cardinality/one}]")
+            initial
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 1 :entry/group \"group-a\" :entry/revision 0 :entry/id \"live\"}
+                  {:db/id 2 :entry/group \"group-a\" :entry/revision -1 :entry/id \"removed\"}]")]
+        (t.is schema.ok schema.error)
+        (t.is initial.ok initial.error)
+        (set! old-basis initial.tx)
+        (vev.delete-tx-report-shallow schema)
+        (vev.delete-tx-report-shallow initial))
+      ;; Every update rematerializes the composite tuple as a small current
+      ;; delta run. Tombstones must hide all obsolete tuple keys.
+      (for [revision (arr.range 1 65)]
+        (let [tx-text (fmt.aprintf "[[:db/add 1 :entry/revision %d]]" revision)
+              report (vev.transact-sqlite-text (addr store) tx-text)]
+          (delete tx-text)
+          (t.is report.ok report.error)
+          (set! latest-basis report.tx)
+          (vev.delete-tx-report-shallow report)))
+      (let [removed
+              (vev.transact-sqlite-text
+                (addr store) "[[:db/retractEntity 2]]")]
+        (t.is removed.ok removed.error)
+        (set! latest-basis removed.tx)
+        (vev.delete-tx-report-shallow removed))
+      (let [prefix
+              (vev.value-vector
+                ([]vev.Value
+                  [(vev.value-string (vev.string-owned "group-a"))]))
+            start-values
+              ([]vev.Value [(vev.value-keyword ":entry/page-key") prefix])
+            [cursor cursor-ok cursor-error]
+              (vev.sqlite-open-current-ordered-cursor-handle-at-basis
+                store.handle latest-basis start-values false 2)
+            [old old-ok old-error]
+              (vev.sqlite-open-current-ordered-cursor-handle-at-basis
+                store.handle old-basis start-values false 2)]
+        (defer (vev.delete-owned-value prefix))
+        (t.is cursor-ok cursor-error)
+        (t.is old-ok old-error)
+        (when cursor-ok
+          (let [[only only-found only-next-ok only-next-error]
+                  (vev.sqlite-current-ordered-cursor-next! (addr cursor))
+                [none none-found none-ok none-error]
+                  (vev.sqlite-current-ordered-cursor-next! (addr cursor))]
+            (defer (vev.delete-owned-datom only))
+            (defer (vev.delete-owned-datom none))
+            (t.is only-next-ok only-next-error)
+            (t.is only-found)
+            (t.is (= only.e 1))
+            (t.is (= only.v.items[1].int-value 64))
+            (t.is none-ok none-error)
+            (t.is none-found)
+            (t.is (not (= none.a ":entry/page-key")))
+            ;; Work is bounded by the published transaction runs, not the
+            ;; full historical AVET or total database size.
+            (t.is (> cursor.runs-opened 1))
+            (t.is (<= cursor.entries-visited
+                      (+ 2 (* 4 cursor.runs-opened)))))
+          (vev.close-sqlite-current-ordered-cursor cursor))
+        (when old-ok
+          (let [[old-first old-found old-next-ok old-next-error]
+                  (vev.sqlite-current-ordered-cursor-next! (addr old))]
+            (defer (vev.delete-owned-datom old-first))
+            (t.is old-next-ok old-next-error)
+            (t.is old-found)
+            (t.is (= old-first.e 2))
+            (t.is (= old-first.v.items[1].int-value -1)))
+          (vev.close-sqlite-current-ordered-cursor old)))
+      (let [[snapshot snapshot-ok snapshot-error]
+              (vev.sqlite-open-db-snapshot-at-basis path old-basis 2)]
+        (t.is snapshot-ok snapshot-error)
+        (when snapshot-ok
+          (let [source (vev.sqlite-db-read-source (addr snapshot))
+                query
+                  (vev.datalog
+                    [:find ?entry ?key
+                     :where [?entry :entry/page-key ?key]])
+                first-request
+                  (vev.query-page-request
+                    ":entry/page-key"
+                    ([]vev.Value [(vev.value-string "group-a")]) 1)
+                first-page
+                  (vev.q-page-query-source source query first-request)]
+            (defer (vev.delete-query-page-request first-request))
+            (defer (vev.delete-query-page first-page))
+            (defer (vev.delete-query-shallow query))
+            (t.is first-page.result.ok first-page.result.error)
+            (t.is (= (count first-page.result.rows) 1))
+            (t.is (= first-page.result.rows[0].values[0].entity 2))
+            (t.is first-page.has-next-key)
+            (t.is (<= first-page.stats.index-entries-visited
+                      (+ 2 (* 4 first-page.stats.storage-runs-opened))))
+            (t.is (= first-page.stats.lookahead-rows 1))
+            (t.is (= first-page.stats.generic-materialization-steps 0))
+            (let [second-request
+                    (vev.query-page-request-after
+                      ":entry/page-key"
+                      ([]vev.Value [(vev.value-string "group-a")])
+                      first-page.next-key 1)
+                  second-page
+                    (vev.q-page-query-source source query second-request)]
+              (defer (vev.delete-query-page-request second-request))
+              (defer (vev.delete-query-page second-page))
+              (t.is second-page.result.ok second-page.result.error)
+              (t.is (= (count second-page.result.rows) 1))
+              (t.is (= second-page.result.rows[0].values[0].entity 1))
+              (t.is (not second-page.has-next-key))
+              (t.is (= second-page.stats.generic-materialization-steps 0))))
+          (vev.close-sqlite-db-snapshot snapshot)))
+      (vev.close-sqlite-conn store))
+    (let [[reopened reopened-ok reopened-error] (vev.open-sqlite-conn path)]
+      (t.is reopened-ok reopened-error)
+      (let [[compacted compact-ok compact-error]
+              (vev.sqlite-conn-compact-indexes! (addr reopened))]
+        (discard compacted)
+        (t.is compact-ok compact-error))
+      (let [prefix
+              (vev.value-vector
+                ([]vev.Value
+                  [(vev.value-string (vev.string-owned "group-a"))]))
+            start-values
+              ([]vev.Value [(vev.value-keyword ":entry/page-key") prefix])
+            [cursor cursor-ok cursor-error]
+              (vev.sqlite-open-current-ordered-cursor-handle-at-basis
+                reopened.handle latest-basis start-values false 1)
+            [stale stale-code stale-ok stale-error]
+              (vev.sqlite-open-current-ordered-cursor-handle-at-basis-typed
+                reopened.handle old-basis start-values false 1)]
+        (discard stale)
+        (defer (vev.delete-owned-value prefix))
+        (t.is cursor-ok cursor-error)
+        (t.is (not stale-ok))
+        (t.is (= stale-code .StaleBasis))
+        (t.is (= stale-error
+                 "q-page stale basis: SQLite index root is not retained"))
+        (when cursor-ok
+          (let [[only found next-ok next-error]
+                  (vev.sqlite-current-ordered-cursor-next! (addr cursor))]
+            (defer (vev.delete-owned-datom only))
+            (t.is next-ok next-error)
+            (t.is found)
+            (t.is (= only.e 1))
+            (t.is (= cursor.runs-opened 1))
+            (t.is (= cursor.entries-visited 2)))
+          (vev.close-sqlite-current-ordered-cursor cursor)))
+      (vev.close-sqlite-conn reopened))))
+
+(t.deftest sqlite-q-page-schema-proof-is-exact-across-replace-retract-and-reopen
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-schema-proof.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)
+          initial
+            (vev.transact-sqlite-text
+              (addr store)
+              "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}]")
+          changed
+            (vev.transact-sqlite-text
+              (addr store)
+              "[[:db/retract 100 :db/tupleAttrs [:entry/group :entry/id]]
+                [:db/add 100 :db/tupleAttrs [:entry/group :entry/revision :entry/id]]]")]
+      (t.is store-ok store-error)
+      (t.is initial.ok initial.error)
+      (t.is changed.ok changed.error)
+      (vev.delete-tx-report-shallow changed)
+      (vev.delete-tx-report-shallow initial)
+      (vev.close-sqlite-conn store))
+    (let [query
+            (vev.datalog
+              [:find ?entry ?key
+               :where [?entry :entry/page-key ?key]])
+          old-request
+            (vev.query-page-request
+              ":entry/page-key"
+              ([]vev.Value [(vev.value-string "group-a")]) 1)
+          new-after
+            (vev.value-vector3
+              (vev.value-string (vev.string-owned "group-a"))
+              (vev.value-int 1)
+              (vev.value-string (vev.string-owned "a")))
+          new-request
+            (vev.query-page-request-after
+              ":entry/page-key"
+              ([]vev.Value [(vev.value-string "group-a")])
+              new-after 1)
+          [old old-ok old-error]
+            (vev.sqlite-open-db-snapshot-at-basis
+              path vev.tx-partition-base 2)
+          [new new-ok new-error]
+            (vev.sqlite-open-db-snapshot-at-basis
+              path (+ vev.tx-partition-base 1) 2)]
+      (t.is old-ok old-error)
+      (t.is new-ok new-error)
+      (when (and old-ok new-ok)
+        (let [old-source (vev.sqlite-db-read-source (addr old))
+              new-source (vev.sqlite-db-read-source (addr new))
+              old-plan
+                (vev.query-page-plan-source old-source query old-request)
+              new-plan
+                (vev.query-page-plan-source new-source query new-request)]
+          (t.is old-plan.ok old-plan.error)
+          (t.is (= old-plan.tuple-width 2))
+          (t.is (<= old-plan.schema-index-entries-visited 2))
+          (t.is new-plan.ok new-plan.error)
+          (t.is (= new-plan.tuple-width 3))
+          (t.is (<= new-plan.schema-index-entries-visited 2))
+          (vev.delete-query-page-plan new-plan)
+          (vev.delete-query-page-plan old-plan)))
+      (when old-ok (vev.close-sqlite-db-snapshot old))
+      (when new-ok (vev.close-sqlite-db-snapshot new))
+      (vev.delete-query-page-request new-request)
+      (vev.delete-query-page-request old-request)
+      (vev.delete-owned-value new-after)
+      (vev.delete-query-shallow query))))
+
+(t.deftest sqlite-q-page-schema-proof-never-materializes-corrupt-old-schema-history
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-schema-history-tripwire.sqlite"
+        latest-basis: u64 0]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)
+          initial
+            (vev.transact-sqlite-text
+              (addr store)
+              "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}]")]
+      (t.is store-ok store-error)
+      (t.is initial.ok initial.error)
+      (let [three false]
+        (for [_ (arr.range 0 12)]
+          (let [change
+                  (vev.transact-sqlite-text
+                    (addr store)
+                    (if three
+                      "[[:db/retract 100 :db/tupleAttrs [:entry/group :entry/revision :entry/id]] [:db/add 100 :db/tupleAttrs [:entry/group :entry/id]]]"
+                      "[[:db/retract 100 :db/tupleAttrs [:entry/group :entry/id]] [:db/add 100 :db/tupleAttrs [:entry/group :entry/revision :entry/id]]]"))]
+            (t.is change.ok change.error)
+            (set! three (not three))
+            (set! latest-basis change.tx)
+            (vev.delete-tx-report-shallow change))))
+      (let [entry
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 1 :entry/group \"group-a\" :entry/id \"a\"}]")
+            corrupt-sql
+              (fmt.aprintf
+                "UPDATE vev_datoms SET value_text = 'not-edn' WHERE e = 100 AND a = ':db/tupleAttrs' AND tx < %d"
+                latest-basis)
+            corrupt-rc (vev.sqlite-app-exec-raw store.handle corrupt-sql)]
+        (defer (delete corrupt-sql))
+        (t.is entry.ok entry.error)
+        (t.is (= corrupt-rc 0))
+        (set! latest-basis entry.tx)
+        (vev.delete-tx-report-shallow entry))
+      (vev.delete-tx-report-shallow initial)
+      (vev.close-sqlite-conn store))
+    (let [[snapshot snapshot-ok snapshot-error]
+            (vev.sqlite-open-db-snapshot-at-basis path latest-basis 2)]
+      (t.is snapshot-ok snapshot-error)
+      (when snapshot-ok
+        (let [source (vev.sqlite-db-read-source (addr snapshot))
+              query
+                (vev.datalog
+                  [:find ?entry ?key
+                   :where [?entry :entry/page-key ?key]])
+              request
+                (vev.query-page-request
+                  ":entry/page-key"
+                  ([]vev.Value [(vev.value-string "group-a")]) 1)
+              page (vev.q-page-query-source source query request)]
+          (t.is page.result.ok page.result.error)
+          (t.is (= (count page.result.rows) 1))
+          (t.is (<= page.stats.schema-index-entries-visited 2))
+          (t.is (= page.stats.generic-materialization-steps 0))
+          (vev.delete-query-page page)
+          (vev.delete-query-page-request request)
+          (vev.delete-query-shallow query))
+        (vev.close-sqlite-db-snapshot snapshot)))))
+
+(t.deftest q-page-resident-concatenates-without-gaps-or-duplicates
+  (defer (free_all context.allocator))
+  (let [conn (page-test-conn)]
+    (transact-page-entry! (addr conn) 1 "group-a" 1 "a")
+    (transact-page-entry! (addr conn) 2 "group-a" 2 "b")
+    (transact-page-entry! (addr conn) 3 "group-a" 2 "c")
+    (transact-page-entry! (addr conn) 4 "group-a" 3 "d")
+    (let [query
+            (vev.datalog
+              [:find ?entry ?key
+               :where [?entry :entry/page-key ?key]])
+          first-request
+            (vev.query-page-request
+              ":entry/page-key" ([]vev.Value [(vev.value-string "group-a")]) 2)
+          first
+            (vev.q-page-query-resident
+              (addr conn.db) query first-request)]
+      (defer (vev.delete-query-page-request first-request))
+      (defer (vev.delete-query-page first))
+      (defer (vev.delete-query-shallow query))
+      (t.is first.result.ok first.result.error)
+      (t.is (= (count first.result.rows) 2))
+      (t.is first.has-next-key)
+      (t.is (= first.result.rows[0].values[0].entity 1))
+      (t.is (= first.result.rows[1].values[0].entity 2))
+      (t.is (= first.next-key.items[2].text "b"))
+      (t.is (= first.stats.index-entries-visited 3))
+      (t.is (= first.stats.generic-materialization-steps 0))
+      (let [second-request
+              (vev.query-page-request-after
+                ":entry/page-key"
+                ([]vev.Value [(vev.value-string "group-a")])
+                first.next-key 2)
+            second
+              (vev.q-page-query-resident
+                (addr conn.db) query second-request)]
+        (defer (vev.delete-query-page-request second-request))
+        (defer (vev.delete-query-page second))
+        (t.is second.result.ok second.result.error)
+        (t.is (= (count second.result.rows) 2))
+        (t.is (= second.result.rows[0].values[0].entity 3))
+        (t.is (= second.result.rows[1].values[0].entity 4))
+        (t.is (not second.has-next-key))
+        (t.is (= second.stats.index-entries-visited 3))))))
+
+(t.deftest q-page-shared-snapshot-concatenates-current-tuples-with-bounded-seek
+  (defer (free_all context.allocator))
+  (let [conn (page-test-conn)]
+    (transact-page-entry! (addr conn) 1 "group-a" 1 "a")
+    (transact-page-entry! (addr conn) 2 "group-a" 2 "b")
+    (transact-page-entry! (addr conn) 3 "group-a" 2 "c")
+    (let [moved (vev.transact (addr conn) [[:db/add 1 :entry/revision 3]])]
+      (t.is moved.ok moved.error))
+    (let [shared (vev.shared-db-snapshot-from-db conn.db 2)
+          source (vev.shared-db-snapshot-read-source (addr shared))
+          query
+            (vev.datalog
+              [:find ?entry ?key
+               :where [?entry :entry/page-key ?key]])
+          first-request
+            (vev.query-page-request
+              ":entry/page-key" ([]vev.Value [(vev.value-string "group-a")]) 2)
+          plan (vev.query-page-plan-source source query first-request)
+          first (vev.q-page-query-source source query first-request)]
+      (defer (vev.delete-shared-db-snapshot shared))
+      (defer (vev.delete-query-page-request first-request))
+      (defer (vev.delete-query-page first))
+      (defer (vev.delete-query-page-plan plan))
+      (defer (vev.delete-query-shallow query))
+      (t.is first.result.ok first.result.error)
+      (t.is plan.ok plan.error)
+      (t.is (= plan.schema-index-entries-visited 1))
+      (t.is (= (count first.result.rows) 2))
+      (t.is (= first.result.rows[0].values[0].entity 2))
+      (t.is (= first.result.rows[1].values[0].entity 3))
+      (t.is first.has-next-key)
+      (t.is (= first.stats.index-entries-visited 3))
+      (t.is (= first.stats.generic-materialization-steps 0))
+      (let [second-request
+              (vev.query-page-request-after
+                ":entry/page-key"
+                ([]vev.Value [(vev.value-string "group-a")])
+                first.next-key 2)
+            second (vev.q-page-query-source source query second-request)]
+        (defer (vev.delete-query-page-request second-request))
+        (defer (vev.delete-query-page second))
+        (t.is second.result.ok second.result.error)
+        (t.is (= (count second.result.rows) 1))
+        (t.is (= second.result.rows[0].values[0].entity 1))
+        (t.is (= second.result.rows[0].values[1].items[1].int-value 3))
+        (t.is (not second.has-next-key))
+        ;; One result plus one bounded prefix-ending probe.
+        (t.is (= second.stats.index-entries-visited 2))))))
+
+(t.deftest shared-current-avet-preserves-distinct-nonunique-eav-facts
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        first (vev.transact (addr conn) [[:db/add 1 :entry/tag "same"]])
+        second (vev.transact (addr conn) [[:db/add 2 :entry/tag "same"]])
+        shared (vev.shared-db-snapshot-from-db conn.db 2)
+        start-values
+          ([]vev.Value
+            [(vev.value-keyword ":entry/tag") (vev.value-string "same")])
+        [cursor cursor-ok cursor-error]
+          (vev.shared-current-ordered-cursor
+            (addr shared.datoms) (addr shared.indexes)
+            start-values false)]
+    (defer (vev.delete-shared-db-snapshot shared))
+    (t.is first.ok first.error)
+    (t.is second.ok second.error)
+    (t.is cursor-ok cursor-error)
+    (when cursor-ok
+      (let [[one one-found one-ok one-error]
+              (vev.shared-current-ordered-cursor-next! (addr cursor))
+            [two two-found two-ok two-error]
+              (vev.shared-current-ordered-cursor-next! (addr cursor))]
+        (t.is one-ok one-error)
+        (t.is two-ok two-error)
+        (t.is one-found)
+        (t.is two-found)
+        (t.is (= one.e 1))
+        (t.is (= two.e 2))))))
+
+(t.deftest q-page-store-shared-resident-keeps-exact-snapshots-and-current-order
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-shared-store.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-store path)]
+      (t.is store-ok store-error)
+      (let [[resident-ok resident-error] (vev.ensure-store-resident! (addr store))
+            schema
+              (vev.transact-store-report-text
+                (addr store)
+                "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/revision :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                  {:db/id 101 :db/ident :entry/group :db/cardinality :db.cardinality/one}
+                  {:db/id 102 :db/ident :entry/revision :db/cardinality :db.cardinality/one}
+                  {:db/id 103 :db/ident :entry/id :db/cardinality :db.cardinality/one}]")
+            seeded
+              (vev.transact-store-report-text
+                (addr store)
+                "[{:db/id 1 :entry/group \"group-a\" :entry/revision 1 :entry/id \"a\"}
+                  {:db/id 2 :entry/group \"group-a\" :entry/revision 2 :entry/id \"b\"}]")]
+        (t.is schema.ok schema.error)
+        (t.is seeded.ok seeded.error)
+        (t.is resident-ok resident-error)
+        (vev.delete-store-tx-report schema)
+        (vev.delete-store-tx-report seeded))
+      (let [[before before-ok before-error] (vev.store-db (addr store))
+            changed
+              (vev.transact-store-report-text
+                (addr store)
+                "[[:db/add 1 :entry/revision 3] [:db/retractEntity 2]]")]
+        (t.is before-ok before-error)
+        (t.is changed.ok changed.error)
+        (vev.delete-store-tx-report changed)
+        (let [[head indexed _tail-transactions tail-datoms lag-ok lag-error]
+                (vev.sqlite-index-lag-stats-raw store.sqlite.handle)
+              [after after-ok after-error] (vev.store-db (addr store))
+              [before-source before-source-ok before-source-error]
+                (vev.store-db-read-source (addr before))
+              [after-source after-source-ok after-source-error]
+                (vev.store-db-read-source (addr after))
+              query
+                (vev.datalog
+                  [:find ?entry ?key
+                   :where [?entry :entry/page-key ?key]])
+              request
+                (vev.query-page-request
+                  ":entry/page-key"
+                  ([]vev.Value [(vev.value-string "group-a")]) 2)
+              before-page
+                (vev.q-page-query-source before-source query request)
+              after-page
+                (vev.q-page-query-source after-source query request)
+              filtered-source after-source]
+          (set! filtered-source.filter-has-as-of true)
+          (set! filtered-source.filter-as-of-tx 1)
+          (let [filtered-page
+                  (vev.q-page-query-source filtered-source query request)]
+            (defer (vev.delete-query-page filtered-page))
+            (t.is (not filtered-page.result.ok))
+            (t.is (= filtered-page.result.error
+                     "q-page does not support filtered resident as-of without a versioned current root")))
+          (defer (vev.close-store-db! (addr before)))
+          (defer (vev.close-store-db! (addr after)))
+          (defer (vev.delete-query-page-request request))
+          (defer (vev.delete-query-page before-page))
+          (defer (vev.delete-query-page after-page))
+          (defer (vev.delete-query-shallow query))
+          (t.is after-ok after-error)
+          (t.is lag-ok lag-error)
+          (t.is (= indexed head))
+          (t.is (= tail-datoms 0))
+          (t.is before-source-ok before-source-error)
+          (t.is after-source-ok after-source-error)
+          (t.is (= before-source.kind .Shared-Resident-Datoms-And-Indexes))
+          (t.is (= after-source.kind .Shared-Resident-Datoms-And-Indexes))
+          (t.is before-page.result.ok before-page.result.error)
+          (t.is (= (count before-page.result.rows) 2))
+          (when (= (count before-page.result.rows) 2)
+            (t.is (= before-page.result.rows[0].values[0].entity 1))
+            (t.is (= before-page.result.rows[1].values[0].entity 2)))
+          (t.is after-page.result.ok after-page.result.error)
+          (t.is (= (count after-page.result.rows) 1))
+          (when (= (count after-page.result.rows) 1)
+            (t.is (= after-page.result.rows[0].values[0].entity 1))
+            (t.is (= after-page.result.rows[0].values[1].items[1].int-value 3)))
+          (t.is (<= after-page.stats.index-entries-visited 2))
+          (t.is (= after-page.stats.generic-materialization-steps 0))))
+      (vev.close-store store))))
+
+(t.deftest q-page-shared-current-as-of-own-basis-is-the-same-exact-snapshot
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-shared-current-as-of.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-store path)
+          [resident-ok resident-error] (vev.ensure-store-resident! (addr store))
+          schema
+            (vev.transact-store-report-text
+              (addr store)
+              "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/revision :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                {:db/id 101 :db/ident :entry/group :db/cardinality :db.cardinality/one}
+                {:db/id 102 :db/ident :entry/revision :db/cardinality :db.cardinality/one}
+                {:db/id 103 :db/ident :entry/id :db/cardinality :db.cardinality/one}]")
+          entry
+            (vev.transact-store-report-text
+              (addr store)
+              "[{:db/id 1 :entry/group \"group-a\" :entry/revision 1 :entry/id \"a\"}]")
+          [current current-ok current-error] (vev.store-db (addr store))
+          [basis basis-ok basis-error] (vev.store-db-basis-t (addr current))
+          pinned (vev.as-of-store-db (addr current) basis)
+          [source source-ok source-error] (vev.store-db-read-source (addr pinned))
+          query
+            (vev.datalog
+              [:find ?entry ?key
+               :where [?entry :entry/page-key ?key]])
+          request
+            (vev.query-page-request
+              ":entry/page-key"
+              ([]vev.Value [(vev.value-string "group-a")]) 1)
+          page (vev.q-page-query-source source query request)]
+      (t.is store-ok store-error)
+      (t.is resident-ok resident-error)
+      (t.is schema.ok schema.error)
+      (t.is entry.ok entry.error)
+      (t.is current-ok current-error)
+      (t.is basis-ok basis-error)
+      (t.is source-ok source-error)
+      (t.is page.result.ok page.result.error)
+      (t.is (= (count page.result.rows) 1))
+      (when (= (count page.result.rows) 1)
+        (t.is (= page.result.rows[0].values[0].entity 1)))
+      (vev.delete-query-page page)
+      (vev.delete-query-page-request request)
+      (vev.delete-query-shallow query)
+      (vev.close-store-db pinned)
+      (vev.close-store-db current)
+      (vev.delete-store-tx-report entry)
+      (vev.delete-store-tx-report schema)
+      (vev.close-store store))))
+
+(t.deftest q-page-resident-basis-check-never-scans-historical-datoms
+  (defer (free_all context.allocator))
+  (let [conn (page-test-conn)]
+    (transact-page-entry! (addr conn) 1 "group-a" 1 "a")
+    (let [basis (vev.db-basis-tx conn.db)
+          shared (vev.shared-db-snapshot-from-db conn.db 2)
+          resident-source (vev.resident-db-read-source (addr conn.db))
+          indexed-source
+            (vev.shared-resident-index-db-read-source
+              (addr conn.db) (addr shared.indexes))
+          historical-tx conn.db.datoms[0].tx]
+      ;; Test-only poison: the immutable scalar was established when DB was
+      ;; built. A planner which walks history to recompute MAX(tx) will observe
+      ;; this impossible later value and reject the otherwise exact filter.
+      (set! conn.db.datoms[0].tx (+ basis 1000))
+      (set! resident-source.filter-has-as-of true)
+      (set! resident-source.filter-as-of-tx basis)
+      (set! indexed-source.filter-has-as-of true)
+      (set! indexed-source.filter-as-of-tx basis)
+      (t.is (= (vev.db-basis-tx conn.db) basis))
+      (t.is (vev.query-page-filter-is-exact-source-basis? resident-source))
+      (t.is (vev.query-page-filter-is-exact-source-basis? indexed-source))
+      (set! conn.db.datoms[0].tx historical-tx)
+      (vev.delete-shared-db-snapshot shared))))
+
+(t.deftest q-page-large-resident-delta-root-supports-current-as-of-reopen-and-reclaim
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-large-resident-current-as-of.sqlite"
+        basis: u64 0]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-store path)
+          [resident-ok resident-error] (vev.ensure-store-resident! (addr store))
+          schema
+            (vev.transact-store-report-text
+              (addr store)
+              "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/revision :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                {:db/id 101 :db/ident :entry/group :db/cardinality :db.cardinality/one}
+                {:db/id 102 :db/ident :entry/revision :db/cardinality :db.cardinality/one}
+                {:db/id 103 :db/ident :entry/id :db/cardinality :db.cardinality/one}]")
+          tx-data (make [dynamic]vev.Tx-Data 0 4200)]
+      (t.is store-ok store-error)
+      (t.is resident-ok resident-error)
+      (t.is schema.ok schema.error)
+      ;; Explicit positive entity IDs are public Vev input. The 4,200 input
+      ;; datoms deliberately exceed the novelty hard bound; resident writes
+      ;; must publish their delta root atomically instead of creating a tail.
+      (for [index (arr.range 0 1400)]
+        (let [entity (u64 (+ index 1000))]
+          (arr.push! tx-data
+            (vev.add entity ":entry/group" (vev.value-string "group-a")))
+          (arr.push! tx-data
+            (vev.add entity ":entry/revision" (vev.value-int (i64 index))))
+          (arr.push! tx-data
+            (vev.add entity ":entry/id" (vev.value-int (i64 index))))))
+      (let [large
+              (vev.transact-store-report-tx-data
+                (addr store) (slice tx-data 0))
+            [head indexed _tail-transactions tail-datoms lag-ok lag-error]
+              (vev.sqlite-index-lag-stats-raw store.sqlite.handle)
+            [current current-ok current-error] (vev.store-db (addr store))
+            [current-basis basis-ok basis-error]
+              (vev.store-db-basis-t (addr current))
+            pinned (vev.as-of-store-db (addr current) current-basis)
+            [source source-ok source-error]
+              (vev.store-db-read-source (addr pinned))
+            query
+              (vev.datalog
+                [:find ?entry ?key
+                 :where [?entry :entry/page-key ?key]])
+            request
+              (vev.query-page-request
+                ":entry/page-key"
+                ([]vev.Value [(vev.value-string "group-a")]) 1)
+            page (vev.q-page-query-source source query request)]
+        (t.is large.ok large.error)
+        (t.is (> (count large.tx-data)
+                 vev.sqlite-index-novelty-datom-hard-limit))
+        (t.is lag-ok lag-error)
+        (t.is (= indexed head))
+        (t.is (= tail-datoms 0))
+        (t.is current-ok current-error)
+        (t.is basis-ok basis-error)
+        (set! basis current-basis)
+        (t.is source-ok source-error)
+        (t.is page.result.ok page.result.error)
+        (t.is (= (count page.result.rows) 1))
+        (when (= (count page.result.rows) 1)
+          (t.is (= page.result.rows[0].values[0].entity 1000)))
+        (t.is (<= page.stats.index-entries-visited 2))
+        (vev.delete-query-page page)
+        (vev.delete-query-page-request request)
+        (vev.delete-query-shallow query)
+        (vev.close-store-db pinned)
+        (vev.close-store-db current)
+        (vev.delete-store-tx-report large))
+      (delete tx-data)
+      (vev.delete-store-tx-report schema)
+      (vev.close-store store))
+    ;; Reopen before maintenance to prove the published transaction-delta root
+    ;; itself, not the in-process shared snapshot, serves the exact basis.
+    (let [[reopened reopened-ok reopened-error] (vev.open-store path)
+          [current current-ok current-error] (vev.store-db (addr reopened))
+          pinned (vev.as-of-store-db (addr current) basis)
+          [source source-ok source-error]
+            (vev.store-db-read-source (addr pinned))
+          query
+            (vev.datalog
+              [:find ?entry ?key
+               :where [?entry :entry/page-key ?key]])
+          request
+            (vev.query-page-request
+              ":entry/page-key"
+              ([]vev.Value [(vev.value-string "group-a")]) 1)
+          before-reclaim (vev.q-page-query-source source query request)
+          [reclaimed reclaim-ok reclaim-error]
+            (vev.reclaim-store-indexes! (addr reopened) false)
+          after-reclaim (vev.q-page-query-source source query request)]
+      (discard reclaimed)
+      (t.is reopened-ok reopened-error)
+      (t.is current-ok current-error)
+      (t.is source-ok source-error)
+      (t.is before-reclaim.result.ok before-reclaim.result.error)
+      (t.is (= (count before-reclaim.result.rows) 1))
+      (t.is reclaim-ok reclaim-error)
+      (t.is after-reclaim.result.ok after-reclaim.result.error)
+      (t.is (= (count after-reclaim.result.rows) 1))
+      (when (= (count after-reclaim.result.rows) 1)
+        (t.is (= after-reclaim.result.rows[0].values[0].entity 1000)))
+      (vev.delete-query-page after-reclaim)
+      (vev.delete-query-page before-reclaim)
+      (vev.delete-query-page-request request)
+      (vev.delete-query-shallow query)
+      (vev.close-store-db pinned)
+      (vev.close-store-db current)
+      (vev.close-store reopened))))
+
+(t.deftest sqlite-current-avet-delta-runs-page-interleaved-replacement
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-current-delta-runs.sqlite"
+        retained-basis: u64 0]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)]
+      (t.is store-ok store-error)
+      (let [schema
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/revision :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                  {:db/id 101 :db/ident :entry/group :db/cardinality :db.cardinality/one}
+                  {:db/id 102 :db/ident :entry/revision :db/cardinality :db.cardinality/one}
+                  {:db/id 103 :db/ident :entry/id :db/cardinality :db.cardinality/one}]")
+            high
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 1 :entry/group \"group-a\" :entry/revision 20 :entry/id \"b\"}]")
+            low
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 2 :entry/group \"group-a\" :entry/revision 10 :entry/id \"a\"}]")
+            last
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 3 :entry/group \"group-a\" :entry/revision 30 :entry/id \"c\"}]")]
+        (t.is schema.ok schema.error)
+        (t.is high.ok high.error)
+        (t.is low.ok low.error)
+        (t.is last.ok last.error)
+        (set! retained-basis last.tx)
+        (vev.delete-tx-report-shallow schema)
+        (vev.delete-tx-report-shallow high)
+        (vev.delete-tx-report-shallow low)
+        (vev.delete-tx-report-shallow last))
+      (let [moved
+              (vev.transact-sqlite-text
+                (addr store) "[[:db/add 1 :entry/revision 25]]")
+            replaced
+              (vev.transact-sqlite-text
+                (addr store) "[[:db/retractEntity 2]]")
+            replacement
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 4 :entry/group \"group-a\" :entry/revision 10 :entry/id \"a\"}]")
+            removed
+              (vev.transact-sqlite-text
+                (addr store) "[[:db/retractEntity 3]]")]
+        (t.is moved.ok moved.error)
+        (t.is replaced.ok replaced.error)
+        (t.is replacement.ok replacement.error)
+        (t.is removed.ok removed.error)
+        (vev.delete-tx-report-shallow moved)
+        (vev.delete-tx-report-shallow replaced)
+        (vev.delete-tx-report-shallow replacement)
+        (vev.delete-tx-report-shallow removed))
+      (vev.close-sqlite-conn store))
+    (let [[snapshot snapshot-ok snapshot-error]
+            (vev.sqlite-open-db-snapshot path 2)]
+      (t.is snapshot-ok snapshot-error)
+      (when snapshot-ok
+        (let [source (vev.sqlite-db-read-source (addr snapshot))
+              query
+                (vev.datalog
+                  [:find ?entry ?key
+                   :where [?entry :entry/page-key ?key]])
+              first-request
+                (vev.query-page-request
+                  ":entry/page-key"
+                  ([]vev.Value [(vev.value-string "group-a")]) 1)
+              first (vev.q-page-query-source source query first-request)]
+          (defer (vev.delete-query-page-request first-request))
+          (defer (vev.delete-query-page first))
+          (defer (vev.delete-query-shallow query))
+          (t.is first.result.ok first.result.error)
+          (t.is (= (count first.result.rows) 1))
+          (t.is (= first.result.rows[0].values[0].entity 4))
+          (t.is (= first.result.rows[0].values[1].items[1].int-value 10))
+          (t.is first.has-next-key)
+          (t.is (> first.stats.storage-runs-opened 1))
+          (t.is (<= first.stats.index-entries-visited
+                    (+ 2 (* 4 first.stats.storage-runs-opened))))
+          (let [second-request
+                  (vev.query-page-request-after
+                    ":entry/page-key"
+                    ([]vev.Value [(vev.value-string "group-a")])
+                    first.next-key 1)
+                second (vev.q-page-query-source source query second-request)]
+            (defer (vev.delete-query-page-request second-request))
+            (defer (vev.delete-query-page second))
+            (t.is second.result.ok second.result.error)
+            (t.is (= (count second.result.rows) 1))
+            (t.is (= second.result.rows[0].values[0].entity 1))
+            (t.is (= second.result.rows[0].values[1].items[1].int-value 25))
+            (t.is (not second.has-next-key))
+            (t.is (= second.stats.generic-materialization-steps 0))))
+        (vev.close-sqlite-db-snapshot snapshot)))
+    ;; The retained pre-replacement root remains an exact temporal current
+    ;; state even after later tombstones and rematerialized keys were written.
+    (let [[retained retained-ok retained-error]
+            (vev.sqlite-open-db-snapshot-at-basis path retained-basis 2)]
+      (t.is retained-ok retained-error)
+      (when retained-ok
+        (let [source (vev.sqlite-db-read-source (addr retained))
+              query
+                (vev.datalog
+                  [:find ?entry ?key
+                   :where [?entry :entry/page-key ?key]])
+              request
+                (vev.query-page-request
+                  ":entry/page-key"
+                  ([]vev.Value [(vev.value-string "group-a")]) 3)
+              page (vev.q-page-query-source source query request)]
+          (defer (vev.delete-query-page-request request))
+          (defer (vev.delete-query-page page))
+          (defer (vev.delete-query-shallow query))
+          (t.is page.result.ok page.result.error)
+          (t.is (= (count page.result.rows) 3))
+          (t.is (= page.result.rows[0].values[0].entity 2))
+          (t.is (= page.result.rows[1].values[0].entity 1))
+          (t.is (= page.result.rows[2].values[0].entity 3)))
+        (vev.close-sqlite-db-snapshot retained)))))
+
+(t.deftest sqlite-current-avet-publication-cost-is-transaction-bounded
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-current-publication-cost.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)]
+      (t.is store-ok store-error)
+      (let [schema
+              (vev.transact-sqlite-text
+                (addr store)
+                "[{:db/id 100 :db/ident :entry/page-key :db/valueType :db.type/tuple :db/tupleAttrs [:entry/group :entry/revision :entry/id] :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                  {:db/id 101 :db/ident :entry/group :db/cardinality :db.cardinality/one}
+                  {:db/id 102 :db/ident :entry/revision :db/cardinality :db.cardinality/one}
+                  {:db/id 103 :db/ident :entry/id :db/cardinality :db.cardinality/one}]")]
+        (t.is schema.ok schema.error)
+        (vev.delete-tx-report-shallow schema))
+      ;; Accumulate a current state much larger than the transaction measured
+      ;; below. Publication accounting must still count only its AVET delta.
+      (for [index (arr.range 0 40)]
+        (let [tx-text
+                (fmt.aprintf
+                  "[[:db/add %d :entry/group \"group-a\"] [:db/add %d :entry/revision %d] [:db/add %d :entry/id \"entry-%d\"]]"
+                  (+ index 1) (+ index 1) index (+ index 1) index)
+              seeded (vev.transact-sqlite-text (addr store) tx-text)]
+          (delete tx-text)
+          (t.is seeded.ok seeded.error)
+          (vev.delete-tx-report-shallow seeded)))
+      (vev.reset-sqlite-direct-write-profile! (addr store))
+      (let [changed
+              (vev.transact-sqlite-text
+                (addr store) "[[:db/add 1 :entry/revision 1000]]")
+            profile (vev.sqlite-direct-write-profile (addr store))]
+        (t.is changed.ok changed.error)
+        (t.is (> (count changed.tx-data) 0))
+        (t.is (= profile.current-avet-delta-entries
+                 (u64 (count changed.tx-data))))
+        (t.is (= profile.current-avet-full-scan-entries 0))
+        (vev.delete-tx-report-shallow changed))
+      (vev.close-sqlite-conn store))))
+
+(t.deftest sqlite-current-avet-preserves-distinct-nonunique-eav-facts
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-current-nonunique.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)]
+      (t.is store-ok store-error)
+      (let [first
+              (vev.transact-sqlite-text
+                (addr store) "[[:db/add 1 :entry/tag \"same\"]]")
+            second
+              (vev.transact-sqlite-text
+                (addr store) "[[:db/add 2 :entry/tag \"same\"]]")
+            start-values
+              ([]vev.Value
+                [(vev.value-keyword ":entry/tag")
+                 (vev.value-string "same")])
+            [cursor cursor-ok cursor-error]
+              (vev.sqlite-open-current-ordered-cursor-handle-at-basis
+                store.handle second.tx start-values false 2)]
+        (t.is first.ok first.error)
+        (t.is second.ok second.error)
+        (t.is cursor-ok cursor-error)
+        (when cursor-ok
+          (let [[one one-found one-ok one-error]
+                  (vev.sqlite-current-ordered-cursor-next! (addr cursor))
+                [two two-found two-ok two-error]
+                  (vev.sqlite-current-ordered-cursor-next! (addr cursor))]
+            (defer (vev.delete-owned-datom one))
+            (defer (vev.delete-owned-datom two))
+            (t.is one-ok one-error)
+            (t.is two-ok two-error)
+            (t.is one-found)
+            (t.is two-found)
+            (t.is (= one.e 1))
+            (t.is (= two.e 2)))
+          (vev.close-sqlite-current-ordered-cursor cursor))
+        (vev.delete-tx-report-shallow first)
+        (vev.delete-tx-report-shallow second))
+      (vev.close-sqlite-conn store))))
+
+(t.deftest q-page-rejects-filtered-resident-as-of
+  (defer (free_all context.allocator))
+  (let [db (page-test-db)
+        source (vev.resident-db-read-source (addr db))
+        query
+          (vev.datalog
+            [:find ?entry ?key
+             :where [?entry :entry/page-key ?key]])
+        request
+          (vev.query-page-request
+            ":entry/page-key" ([]vev.Value [(vev.value-string "group-a")]) 2)]
+    (set! source.filter-has-as-of true)
+    (set! source.filter-as-of-tx vev.tx-partition-base)
+    (let [page (vev.q-page-query-source source query request)]
+      (defer (vev.delete-query-page page))
+      (t.is (not page.result.ok))
+      (t.is (= page.error-code .StaleBasis))
+      (t.is (= page.result.error
+               "q-page does not support filtered resident as-of without a versioned current root")))
+    (vev.delete-query-page-request request)
+    (vev.delete-query-shallow query)
+    (vev.delete-owned-db db)))
+
+(t.deftest q-page-planner-accepts-one-unique-composite-key-row
+  (defer (free_all context.allocator))
+  (let [db (page-test-db)
+        query
+          (vev.datalog
+            [:find ?entry ?key
+             :where [?entry :entry/page-key ?key]])
+        request
+          (vev.query-page-request
+            ":entry/page-key" ([]vev.Value [(vev.value-string "group-a")]) 25)
+        plan (vev.query-page-plan-resident db query request)]
+    (defer (vev.delete-query-page-request request))
+    (defer (vev.delete-query-page-plan plan))
+    (defer (vev.delete-query-shallow query))
+    (t.is plan.ok plan.error)
+    (t.is (= plan.error-code .None))
+    (t.is (= plan.index-attr ":entry/page-key"))
+    (t.is (= plan.entity-var "?entry"))
+    (t.is (= plan.key-var "?key"))
+    (t.is (= plan.tuple-width 3))
+    ;; Planner schema proof is one exact current-AVET candidate, independent
+    ;; of both the number of schema attributes and their historical churn.
+    (t.is (= plan.schema-index-entries-visited 1))
+    (t.is (= plan.limit 25))))
+
+(t.deftest q-page-schema-proof-is-bounded-by-one-current-ident-candidate
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        schema (make [dynamic]vev.Tx-Data)]
+    (for [index (arr.range 0 128)]
+      (let [ident (fmt.aprintf ":noise/attr-%d" index)]
+        (arr.push! schema
+          (vev.add (+ 1000 (u64 index)) ":db/ident"
+            (vev.value-keyword ident)))))
+    (arr.push! schema
+      (vev.add 100 ":db/ident" (vev.value-keyword ":entry/page-key")))
+    (arr.push! schema
+      (vev.add 100 ":db/tupleAttrs"
+        (vev.value-keyword-vector
+          ([]string [":entry/group" ":entry/revision" ":entry/id"]))))
+    (arr.push! schema
+      (vev.add 100 ":db/unique" (vev.value-keyword ":db.unique/value")))
+    (let [report (vev.transact-tx-data (addr conn) (slice schema 0))
+          query
+            (vev.datalog
+              [:find ?entry ?key
+               :where [?entry :entry/page-key ?key]])
+          request
+            (vev.query-page-request
+              ":entry/page-key"
+              ([]vev.Value [(vev.value-string "group-a")]) 1)
+          plan (vev.query-page-plan-resident conn.db query request)]
+      (defer (delete schema))
+      (defer (vev.delete-query-page-request request))
+      (defer (vev.delete-query-page-plan plan))
+      (defer (vev.delete-query-shallow query))
+      (t.is report.ok report.error)
+      (t.is plan.ok plan.error)
+      (t.is (= plan.tuple-width 3))
+      (t.is (= plan.schema-index-entries-visited 1)))))
+
+(t.deftest q-page-planner-rejects-non-unique-and-expanded-programs
+  (defer (free_all context.allocator))
+  (let [db (page-test-db)
+        non-unique-query
+          (vev.datalog
+            [:find ?entry ?key
+             :where [?entry :entry/other-key ?key]])
+        expanded-query
+          (vev.datalog
+            [:find ?entry ?key
+             :where [?entry :entry/page-key ?key]
+                    [?entry :entry/title ?title]])
+        non-unique-request
+          (vev.query-page-request
+            ":entry/other-key" ([]vev.Value [(vev.value-string "group-a")]) 10)
+        expanded-request
+          (vev.query-page-request
+            ":entry/page-key" ([]vev.Value [(vev.value-string "group-a")]) 10)
+        non-unique-plan
+          (vev.query-page-plan-resident db non-unique-query non-unique-request)
+        expanded-plan
+          (vev.query-page-plan-resident db expanded-query expanded-request)]
+    (defer (vev.delete-query-page-request non-unique-request))
+    (defer (vev.delete-query-page-request expanded-request))
+    (defer (vev.delete-query-page-plan non-unique-plan))
+    (defer (vev.delete-query-page-plan expanded-plan))
+    (defer (vev.delete-query-shallow non-unique-query))
+    (defer (vev.delete-query-shallow expanded-query))
+    (t.is (not non-unique-plan.ok))
+    (t.is (= non-unique-plan.error-code .Unsupported))
+    (t.is (= non-unique-plan.error
+             "q-page driver must be a composite tuple attribute"))
+    (t.is (not expanded-plan.ok))
+    (t.is (= expanded-plan.error-code .InvalidRequest))
+    (t.is (= expanded-plan.error
+             "q-page requires one entity and tuple-key candidate projection clause"))))
+
+(t.deftest q-page-planner-requires-entity-and-order-key-candidates
+  (defer (free_all context.allocator))
+  (let [db (page-test-db)
+        key-only-query
+          (vev.datalog
+            [:find ?key
+             :where [?entry :entry/page-key ?key]])
+        reversed-query
+          (vev.datalog
+            [:find ?key ?entry
+             :where [?entry :entry/page-key ?key]])
+        request
+          (vev.query-page-request
+            ":entry/page-key" ([]vev.Value [(vev.value-string "group-a")]) 10)
+        key-only-plan
+          (vev.query-page-plan-resident db key-only-query request)
+        reversed-plan
+          (vev.query-page-plan-resident db reversed-query request)]
+    (defer (vev.delete-query-page-request request))
+    (defer (vev.delete-query-page-plan key-only-plan))
+    (defer (vev.delete-query-page-plan reversed-plan))
+    (defer (vev.delete-query-shallow key-only-query))
+    (defer (vev.delete-query-shallow reversed-query))
+    (t.is (not key-only-plan.ok))
+    (t.is (= key-only-plan.error
+             "q-page requires one entity and tuple-key candidate projection clause"))
+    (t.is (not reversed-plan.ok))
+    (t.is (= reversed-plan.error
+             "q-page query must project entity then key from its declared driver clause"))))
+
+(t.deftest q-page-planner-rejects-invalid-after-and-limit
+  (defer (free_all context.allocator))
+  (let [db (page-test-db)
+        query
+          (vev.datalog
+            [:find ?entry ?key
+             :where [?entry :entry/page-key ?key]])
+        wrong-after
+          (vev.value-vector3
+            (vev.value-string (vev.string-owned "group-b")) (vev.value-int 1)
+            (vev.value-string (vev.string-owned "entry-1")))
+        after-request
+          (vev.query-page-request-after
+            ":entry/page-key" ([]vev.Value [(vev.value-string "group-a")])
+            wrong-after 10)
+        limit-request
+          (vev.query-page-request
+            ":entry/page-key" ([]vev.Value [(vev.value-string "group-a")]) 0)
+        after-plan (vev.query-page-plan-resident db query after-request)
+        limit-plan (vev.query-page-plan-resident db query limit-request)]
+    (defer (vev.delete-query-page-request after-request))
+    (defer (vev.delete-query-page-request limit-request))
+    (defer (vev.delete-owned-value wrong-after))
+    (defer (vev.delete-query-page-plan after-plan))
+    (defer (vev.delete-query-page-plan limit-plan))
+    (defer (vev.delete-query-shallow query))
+    (t.is (not after-plan.ok))
+    (t.is (= after-plan.error-code .InvalidRequest))
+    (t.is (= after-plan.error
+             "q-page after must be a full tuple matching the bound prefix"))
+    (t.is (not limit-plan.ok))
+    (t.is (= limit-plan.error-code .InvalidRequest))
+    (t.is (= limit-plan.error
+             "q-page limit must be between 1 and 1024"))))
+
+(t.deftest q-page-planner-rejects-transaction-overlays-explicitly
+  (defer (free_all context.allocator))
+  (let [db (page-test-db)
+        base (vev.resident-db-read-source (addr db))
+        ops (make [dynamic]vev.Tx-Op)
+        overlay (vev.tx-ops-overlay-db-read-source (addr base) (addr ops) 42)
+        query
+          (vev.datalog
+            [:find ?entry ?key
+             :where [?entry :entry/page-key ?key]])
+        request
+          (vev.query-page-request
+            ":entry/page-key" ([]vev.Value [(vev.value-string "group-a")]) 10)
+        plan (vev.query-page-plan-source overlay query request)]
+    (defer (delete ops))
+    (defer (vev.delete-query-page-request request))
+    (defer (vev.delete-query-page-plan plan))
+    (defer (vev.delete-query-shallow query))
+    (t.is (not plan.ok))
+    (t.is (= plan.error-code .Unsupported))
+    (t.is (= plan.error
+             "q-page source must be resident, SQLite, or a bounded immutable overlay; since and history are unsupported"))))
+
+(t.deftest q-page-planner-rejects-schema-changing-bounded-overlay-explicitly
+  (defer (free_all context.allocator))
+  (let [db (page-test-db)
+        shared (vev.shared-db-snapshot-from-db db 4)
+        ops
+          ([dynamic]vev.Tx-Op
+            [(vev.tx-retract
+               100 ":db/unique"
+               (vev.value-keyword ":db.unique/value"))])
+        source
+          (vev.shared-tx-ops-overlay-db-read-source
+            (addr shared.datoms) (addr shared.indexes) (addr ops)
+            (+ db.basis-tx 1))
+        query
+          (vev.datalog
+            [:find ?entry ?key
+             :where [?entry :entry/page-key ?key]])
+        request
+          (vev.query-page-request
+            ":entry/page-key" ([]vev.Value [(vev.value-string "group-a")]) 1)
+        plan (vev.query-page-plan-source source query request)]
+    (defer (delete ops))
+    (defer (vev.delete-shared-db-snapshot shared))
+    (defer (vev.delete-query-page-request request))
+    (defer (vev.delete-query-page-plan plan))
+    (defer (vev.delete-query-shallow query))
+    (t.is (not plan.ok))
+    (t.is (= plan.error-code .Unsupported))
+    (t.is (= plan.error
+             "q-page does not support schema-changing immutable overlays"))))
+
+(t.deftest resident-current-ordered-cursor-excludes-rematerialized-tuples
+  (defer (free_all context.allocator))
+  (let [conn (page-test-conn)]
+    (transact-page-entry! (addr conn) 1 "group-a" 1 "entry-a")
+    (let [change
+            (vev.transact
+              (addr conn)
+              [[:db/add 1 :entry/revision 3]])]
+      (t.is change.ok change.error))
+    (let [prefix-key
+            (vev.value-vector
+              ([]vev.Value
+                [(vev.value-string (vev.string-owned "group-a"))]))
+          start-values
+            ([]vev.Value [(vev.value-keyword ":entry/page-key") prefix-key])
+          cursor
+            (vev.resident-current-ordered-cursor
+              (addr conn.db) start-values false)
+          [only found] (vev.current-ordered-cursor-next-resident! (addr cursor))]
+      (defer (vev.delete-owned-value prefix-key))
+      (t.is found)
+      (t.is (= only.e 1))
+      (t.is (= only.v.kind .Vector))
+      (t.is (= only.v.items[1].int-value 3))
+      (t.is (= cursor.entries-visited 1)))))
+
+(t.deftest resident-current-ordered-cursor-strict-seek-keeps-tie-break-order
+  (defer (free_all context.allocator))
+  (let [conn (page-test-conn)]
+    (transact-page-entry! (addr conn) 1 "group-a" 5 "a")
+    (transact-page-entry! (addr conn) 2 "group-a" 5 "b")
+    (transact-page-entry! (addr conn) 3 "group-a" 6 "c")
+    (let [after
+            (vev.value-vector3
+              (vev.value-string (vev.string-owned "group-a")) (vev.value-int 5)
+              (vev.value-string (vev.string-owned "a")))
+          start-values
+            ([]vev.Value [(vev.value-keyword ":entry/page-key") after])
+          cursor
+            (vev.resident-current-ordered-cursor
+              (addr conn.db) start-values true)
+          [second second-found]
+            (vev.current-ordered-cursor-next-resident! (addr cursor))
+          [third third-found]
+            (vev.current-ordered-cursor-next-resident! (addr cursor))]
+      (defer (vev.delete-owned-value after))
+      (t.is second-found)
+      (t.is (= second.e 2))
+      (t.is (= second.v.items[2].text "b"))
+      (t.is third-found)
+      (t.is (= third.e 3))
+      (t.is (= cursor.entries-visited 2)))))
+
+(t.deftest resident-current-ordered-cursor-excludes-retracted-facts
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-conn)
+        added
+          (vev.transact
+            (addr conn)
+            [[:db/add 1 :entry/marker "gone"]])
+        retracted
+          (vev.transact
+            (addr conn)
+            [[:db/retract 1 :entry/marker "gone"]])
+        start-values
+          ([]vev.Value [(vev.value-keyword ":entry/marker")])
+        cursor
+          (vev.resident-current-ordered-cursor
+            (addr conn.db) start-values false)
+        [candidate found]
+          (vev.current-ordered-cursor-next-resident! (addr cursor))]
+    (discard candidate)
+    (t.is added.ok added.error)
+    (t.is retracted.ok retracted.error)
+    (t.is (not found))
+    (t.is (= cursor.entries-visited 0))))

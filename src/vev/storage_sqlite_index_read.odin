@@ -44,6 +44,35 @@ sqlite_index_lag_stats_raw :: proc(handle: rawptr) -> (head_basis: u64, indexed_
            ""
 }
 
+sqlite_index_tail_datom_count_bounded_raw :: proc(handle: rawptr, limit: u64) -> (count: u64, exceeds: bool, ok: bool, error: string) {
+    if handle == nil {
+        return 0, false, false, "sqlite handle was nil"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    // `vev_datoms_tx` lets SQLite start at the novelty boundary. The inner
+    // LIMIT makes legacy oversized tails cost at most limit+1 index entries.
+    sql := "SELECT COUNT(*) FROM (SELECT 1 FROM vev_datoms INDEXED BY vev_datoms_tx WHERE tx > COALESCE((SELECT basis_tx FROM vev_index_roots ORDER BY root_id DESC LIMIT 1), 0) LIMIT ?1)"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return 0, false, false, "failed to allocate sqlite SQL text"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return 0, false, false, sqlite_error_text(db, "sqlite prepare bounded novelty count failed")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    probe_limit := limit + 1
+    if sqlite3_bind_int64(stmt, 1, i64(probe_limit)) != SQLITE_OK {
+        return 0, false, false, sqlite_error_text(db, "sqlite bind bounded novelty count failed")
+    }
+    if sqlite3_step(stmt) != SQLITE_ROW {
+        return 0, false, false, sqlite_error_text(db, "sqlite bounded novelty count failed")
+    }
+    found := u64(sqlite3_column_int64(stmt, 0))
+    return min(found, limit), found > limit, true, ""
+}
+
 import c "core:c"
 import "core:fmt"
 import "core:strings"
@@ -509,6 +538,49 @@ sqlite_index_root_chunk_info_at_basis_raw :: proc(handle: rawptr, index_name: st
     return 0, 0, 0, 0, "", 0, 0, false, sqlite_error_text(db, "sqlite basis index root page chunk info read failed")
 }
 
+// Reads only the normalized root-page registry. A missing page is a supported
+// legacy state (`found == false`); SQL, decoding, and referential failures are
+// errors and must never be mistaken for absence by a republisher.
+sqlite_index_root_page_at_basis_raw :: proc(handle: rawptr, index_name: string, basis_tx: u64) -> (root_chunk_id: u64, manifest_id: u64, found: bool, ok: bool, error: string) {
+    if handle == nil {
+        return 0, 0, false, false, "sqlite handle was nil"
+    }
+    db := (^SQLite3)(handle)
+    stmt: ^SQLite3_Stmt
+    sql := "SELECT p.root_chunk_id, p.manifest_id, c.chunk_id IS NOT NULL, p.manifest_id = 0 OR m.manifest_id IS NOT NULL FROM (SELECT root_id FROM vev_index_roots WHERE basis_tx = ? ORDER BY root_id DESC LIMIT 1) r JOIN vev_index_root_pages p ON p.root_id = r.root_id LEFT JOIN vev_index_chunks c ON c.chunk_id = p.root_chunk_id LEFT JOIN vev_index_run_manifests m ON m.manifest_id = p.manifest_id WHERE p.index_name = ?"
+    sql_c, sql_c_ok := sqlite_cstring(sql)
+    if !sql_c_ok {
+        return 0, 0, false, false, "failed to allocate sqlite SQL text"
+    }
+    defer delete(sql_c)
+    if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
+        return 0, 0, false, false, sqlite_error_text(db, "sqlite prepare basis index root page failed")
+    }
+    defer _ = sqlite3_finalize(stmt)
+    if sqlite3_bind_int64(stmt, 1, i64(basis_tx)) != SQLITE_OK ||
+       sqlite_bind_text_borrowed(stmt, 2, index_name) != SQLITE_OK {
+        return 0, 0, false, false, sqlite_error_text(db, "sqlite bind basis index root page failed")
+    }
+    rc := sqlite3_step(stmt)
+    if rc == SQLITE_ROW {
+        if sqlite3_column_int(stmt, 2) == 0 {
+            return 0, 0, false, false, "sqlite current AVET root page references a missing chunk"
+        }
+        if sqlite3_column_int(stmt, 3) == 0 {
+            return 0, 0, false, false, "sqlite current AVET root page references a missing manifest"
+        }
+        return u64(sqlite3_column_int64(stmt, 0)),
+               u64(sqlite3_column_int64(stmt, 1)),
+               true,
+               true,
+               ""
+    }
+    if rc == SQLITE_DONE {
+        return 0, 0, false, true, ""
+    }
+    return 0, 0, false, false, sqlite_error_text(db, "sqlite basis index root page read failed")
+}
+
 sqlite_index_root_page_set_at_basis_raw :: proc(handle: rawptr, basis_tx: u64) -> (u64, u64, u64, u64, u64, u64, u64, u64, bool, string) {
     if handle == nil {
         return 0, 0, 0, 0, 0, 0, 0, 0, false, "sqlite handle was nil"
@@ -586,33 +658,49 @@ sqlite_index_root_set_at_basis_wide_raw :: proc(handle: rawptr, basis_tx: u64) -
     return 0, 0, 0, 0, 0, 0, 0, 0, false, sqlite_error_text(db, "sqlite basis index root set read failed")
 }
 
-sqlite_index_root_row_id_at_basis_raw :: proc(handle: rawptr, basis_tx: u64) -> (u64, bool, string) {
+SQLITE_COLUMN_NULL :: 5
+
+sqlite_index_root_row_id_at_basis_status_raw :: proc(handle: rawptr, basis_tx: u64) -> (row_id: u64, found, ok: bool, error: string) {
     if handle == nil {
-        return 0, false, "sqlite handle was nil"
+        return 0, false, false, "sqlite handle was nil"
     }
     db := (^SQLite3)(handle)
     stmt: ^SQLite3_Stmt
     sql := "SELECT root_id FROM vev_index_roots WHERE basis_tx = ? ORDER BY root_id DESC LIMIT 1"
     sql_c, sql_c_ok := sqlite_cstring(sql)
     if !sql_c_ok {
-        return 0, false, "failed to allocate sqlite SQL text"
+        return 0, false, false, "failed to allocate sqlite SQL text"
     }
     defer delete(sql_c)
     if sqlite3_prepare_v2(db, sql_c, -1, &stmt, nil) != SQLITE_OK {
-        return 0, false, sqlite_error_text(db, "sqlite prepare basis index root row id failed")
+        return 0, false, false, sqlite_error_text(db, "sqlite prepare basis index root row id failed")
     }
     defer _ = sqlite3_finalize(stmt)
     if sqlite3_bind_int64(stmt, 1, i64(basis_tx)) != SQLITE_OK {
-        return 0, false, sqlite_error_text(db, "sqlite bind basis index root row id failed")
+        return 0, false, false, sqlite_error_text(db, "sqlite bind basis index root row id failed")
     }
     rc := sqlite3_step(stmt)
     if rc == SQLITE_ROW {
-        return u64(sqlite3_column_int64(stmt, 0)), true, ""
+        if sqlite3_column_type(stmt, 0) == SQLITE_COLUMN_NULL {
+            return 0, false, false, "sqlite basis index root row id was NULL"
+        }
+        return u64(sqlite3_column_int64(stmt, 0)), true, true, ""
     }
     if rc == SQLITE_DONE {
+        return 0, false, true, ""
+    }
+    return 0, false, false, sqlite_error_text(db, "sqlite basis index root row id read failed")
+}
+
+sqlite_index_root_row_id_at_basis_raw :: proc(handle: rawptr, basis_tx: u64) -> (u64, bool, string) {
+    row_id, found, ok, error := sqlite_index_root_row_id_at_basis_status_raw(handle, basis_tx)
+    if !ok {
+        return 0, false, error
+    }
+    if !found {
         return 0, false, "sqlite DB has no Vev index root for basis"
     }
-    return 0, false, sqlite_error_text(db, "sqlite basis index root row id read failed")
+    return row_id, true, ""
 }
 
 sqlite_index_chunk_info_by_id_raw :: proc(handle: rawptr, chunk_id: u64) -> (u64, string, i64, bool, string) {

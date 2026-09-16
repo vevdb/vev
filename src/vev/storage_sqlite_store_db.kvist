@@ -1,6 +1,8 @@
 (package vev)
 
 (def sqlite-db-source-default-page-size 512)
+(def sqlite-novelty-tail-bound-error
+  "SQLite novelty tail exceeds the bounded read limit; publish a full checkpoint")
 
 (defn sqlite-store-db-checkpoint-with-tail [path: string] -> [snapshot: Store-DB, ok: bool, error: string]
   (let [[handle open-ok open-error] (vev.sqlite-open-live-raw path)]
@@ -11,12 +13,31 @@
         (vev.sqlite-close-live-raw handle)
         (return (Store-DB) false read-error))
       (discard read-started))
-    (let [[head-basis indexed-basis _tail-transactions tail-datoms lag-ok lag-error]
-            (vev.sqlite-index-lag-stats-raw handle)]
-      (when (not lag-ok)
+    (let [[head-basis head-ok head-error]
+            (vev.sqlite-storage-head-basis-raw handle)]
+      (when (not head-ok)
         (vev.sqlite-end-query-read-raw handle true)
         (vev.sqlite-close-live-raw handle)
-        (return (Store-DB) false lag-error))
+        (return (Store-DB) false head-error))
+      (let [[root-basis root-ok root-error]
+              (vev.sqlite-latest-index-root-basis-raw handle)
+            indexed-basis (if root-ok root-basis (u64 0))]
+        (when (and (not root-ok)
+                   (not (= root-error "sqlite DB has no Vev index roots")))
+          (vev.sqlite-end-query-read-raw handle true)
+          (vev.sqlite-close-live-raw handle)
+          (return (Store-DB) false root-error))
+      (let [[tail-datoms tail-exceeds bounded-ok bounded-error]
+              (vev.sqlite-index-tail-datom-count-bounded-raw
+                handle (u64 sqlite-index-novelty-datom-hard-limit))]
+        (when (not bounded-ok)
+          (vev.sqlite-end-query-read-raw handle true)
+          (vev.sqlite-close-live-raw handle)
+          (return (Store-DB) false bounded-error))
+        (when tail-exceeds
+          (vev.sqlite-end-query-read-raw handle true)
+          (vev.sqlite-close-live-raw handle)
+          (return (Store-DB) false sqlite-novelty-tail-bound-error))
       (when (= indexed-basis 0)
         (vev.sqlite-end-query-read-raw handle true)
         (vev.sqlite-close-live-raw handle)
@@ -70,7 +91,7 @@
                   (set! out.overlay-tx head-basis)
                   (delete-owned-db tail-db)
                   (close-sqlite-db-snapshot base)
-                  (return out true ""))))))))))
+                  (return out true ""))))))))))))
 
 (defn query-result-owned-copy [result: Query-Result] -> Query-Result
   (when (query-result-owns-values? result)
@@ -112,19 +133,19 @@
       result)))
 
 (defn sqlite-conn-index-root-lags-log? [store: ^SQLite-Conn] -> [lags: bool, ok: bool, error: string]
-  (let [[basis basis-ok basis-error]
-          (vev.sqlite-latest-index-root-basis-raw store^.handle)]
-    (when (not basis-ok)
-      (if (= basis-error "sqlite DB has no Vev index roots")
-        (return false true "")
-        (return false false basis-error)))
-    (let [[tx-ids tx-ok tx-error] (sqlite-conn-tx-ids store)]
-      (defer (delete tx-ids))
-      (when (not tx-ok)
-        (return false false tx-error))
-      (return (and (> (count tx-ids) 0)
-                   (> tx-ids[(- (count tx-ids) 1)] basis))
-              true ""))))
+  ;; Both values are scalar indexed metadata reads. Opening or consulting the
+  ;; current-root cache must never materialize every historical transaction.
+  (let [[head head-ok head-error]
+          (vev.sqlite-storage-head-basis-raw store^.handle)]
+    (when (not head-ok)
+      (return false false head-error))
+    (let [[basis basis-ok basis-error]
+            (vev.sqlite-latest-index-root-basis-raw store^.handle)]
+      (when (not basis-ok)
+        (if (= basis-error "sqlite DB has no Vev index roots")
+          (return false true "")
+          (return false false basis-error)))
+      (return (> head basis) true ""))))
 
 (defn sqlite-store-db-current-root-cached [store: ^SQLite-Conn] -> [snapshot: Store-DB, ok: bool, error: string]
   (when store^.resident-loaded

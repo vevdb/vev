@@ -50,8 +50,10 @@ CREATE TABLE IF NOT EXISTS vev_datoms (
   FOREIGN KEY(tx) REFERENCES vev_transactions(tx)
 );
 CREATE INDEX IF NOT EXISTS vev_tx_meta_tx ON vev_tx_meta(tx, a);
+CREATE INDEX IF NOT EXISTS vev_datoms_tx ON vev_datoms(tx);
 CREATE INDEX IF NOT EXISTS vev_datoms_eavt ON vev_datoms(e, a, value_text, tx, added);
 CREATE INDEX IF NOT EXISTS vev_datoms_eavt_entity_cover ON vev_datoms(e, a, value_text, value_entity, tx, added);
+CREATE INDEX IF NOT EXISTS vev_datoms_entity_attr_latest ON vev_datoms(e, a, tx DESC, id DESC);
 CREATE INDEX IF NOT EXISTS vev_datoms_avet ON vev_datoms(a, value_text, e, tx, added);
 CREATE TABLE IF NOT EXISTS vev_text_terms (
   attr TEXT NOT NULL,
@@ -199,7 +201,7 @@ INSERT OR REPLACE INTO vev_meta (key, value) VALUES ('format', 'vev-snapshot-tex
 INSERT OR REPLACE INTO vev_meta (key, value) VALUES ('storage-architecture', 'vev-sqlite-chunked-index-v0');
 `
 
-SQLITE_SCHEMA_VERSION :: "2"
+SQLITE_SCHEMA_VERSION :: "4"
 SQLITE_ENTITY_PARTITION_LAYOUT :: "separated-v1"
 
 sqlite_entity_partition_layout_current :: proc(db: ^SQLite3) -> bool {
@@ -275,7 +277,7 @@ sqlite_schema_version_current :: proc(db: ^SQLite3) -> bool {
 sqlite_mark_schema_current :: proc(db: ^SQLite3) -> (bool, string) {
     return sqlite_exec_ok(
         db,
-        "INSERT OR REPLACE INTO vev_meta (key, value) VALUES ('schema-version', '2')",
+        "INSERT OR REPLACE INTO vev_meta (key, value) VALUES ('schema-version', '4')",
     )
 }
 
@@ -333,6 +335,11 @@ sqlite_open_initialized :: proc(path: string) -> (^SQLite3, bool, string) {
     if !log_index_ok {
         _ = sqlite3_close(db)
         return nil, false, log_index_error
+    }
+    datom_tx_ok, datom_tx_error := sqlite_ensure_datom_tx_index(db)
+    if !datom_tx_ok {
+        _ = sqlite3_close(db)
+        return nil, false, datom_tx_error
     }
     value_entity_ok, value_entity_error := sqlite_ensure_datom_value_entity_column(db)
     if !value_entity_ok {
@@ -405,6 +412,10 @@ sqlite_ensure_datom_log_index_column :: proc(db: ^SQLite3) -> (bool, string) {
         return false, index_error
     }
     return true, ""
+}
+
+sqlite_ensure_datom_tx_index :: proc(db: ^SQLite3) -> (bool, string) {
+    return sqlite_exec_ok(db, "CREATE INDEX IF NOT EXISTS vev_datoms_tx ON vev_datoms(tx)")
 }
 
 sqlite_ensure_datom_value_entity_column :: proc(db: ^SQLite3) -> (bool, string) {

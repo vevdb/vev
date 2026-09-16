@@ -602,7 +602,8 @@
       (set! profile^.append-root-publish-us (+ profile^.append-root-publish-us (sqlite-profile-elapsed-us publish-start)))
       (when (not root-ok)
         (return (SQLite-Durable-Published-Root) false root-error))
-      (let [[roots roots-ok roots-error] (sqlite-index-root-set-at-basis handle basis-tx)]
+      (let [[roots roots-ok roots-error]
+              (sqlite-index-root-set-at-basis handle basis-tx)]
         (if roots-ok
           (return (SQLite-Durable-Published-Root :root-row-id root-row-id
                                                   :basis-tx basis-tx
@@ -617,7 +618,24 @@
     (let [publish-start (time.now)
           [out-published root-ok root-error] (sqlite-publish-durable-append-publication-with-stmts! handle stmts basis-tx publication enqueue-maintenance)]
       (set! profile^.append-root-publish-us (+ profile^.append-root-publish-us (sqlite-profile-elapsed-us publish-start)))
-      (return out-published root-ok root-error))))
+      (when (not root-ok)
+        (return out-published false root-error))
+      (let [[previous-basis previous-ok]
+              (db-read-source-effective-basis source)]
+        (when (not previous-ok)
+          (return (SQLite-Durable-Published-Root) false
+            "current AVET delta source has no exact basis"))
+        (let [avet-page
+                (sqlite-index-append-delta-page plan.prepared.delta 2)
+              [page-ok page-error]
+                (persist-current-avet-delta-root-page-with-stmts!
+                  handle stmts previous-basis basis-tx
+                  out-published.root-row-id (slice avet-page.entries 0)
+                  appended plan.start-index)]
+          (set! profile^.current-avet-delta-entries
+            (+ profile^.current-avet-delta-entries
+               (u64 (count avet-page.entries))))
+          (return out-published page-ok page-error))))))
 
 (defn persist-source-append-index-roots-sqlite-handle-delta-known-modes-with-stmts [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts, basis-tx: u64, source: DB-Read-Source, appended: []Datom, start-index: int, delta: SQLite-Index-Append-Delta, profile: ^SQLite-Direct-Write-Profile, enqueue-maintenance: bool] -> [ok: bool, error: string]
   (let [plan (sqlite-durable-append-plan-from-delta start-index delta)
@@ -805,7 +823,21 @@
             [root-ok root-error] (persist-index-root-sqlite-handle-from-indexes-mode-with-stmts handle (addr index-stmts) tx (slice delta.pages[0].entries 0) (slice delta.pages[1].entries 0) (slice delta.pages[2].entries 0) (slice delta.pages[3].entries 0) modes)]
         (when (not root-ok)
           (vev.sqlite-rollback-raw handle)
-          (return false root-error))))
+          (return false root-error))
+        (let [[root-row root-row-ok root-row-error]
+                (sqlite-index-root-row-id-at-basis handle tx)]
+          (when (not root-row-ok)
+            (vev.sqlite-rollback-raw handle)
+            (return false root-row-error))
+          (let [[page-ok page-error]
+                  (persist-current-avet-delta-root-page-with-stmts!
+                    handle (addr index-stmts)
+                    (if (= tx tx-partition-base) (u64 0) (- tx 1)) tx
+                    root-row
+                    (slice delta.pages[2].entries 0) tx-data base-count)]
+          (when (not page-ok)
+            (vev.sqlite-rollback-raw handle)
+            (return false page-error))))))
     (vev.sqlite-commit-raw handle)))
 
 (defn sqlite-rollback-if-owned! [handle: rawptr, owns-tx: bool]
@@ -814,8 +846,24 @@
 
 (def sqlite-write-basis-changed-error "SQLite write basis changed while waiting for the writer lock")
 
+(defn sqlite-log-only-novelty-has-room?
+  [handle: rawptr, appended-count: int] -> [ok: bool, error: string]
+  (let [[tail-count tail-exceeds count-ok count-error]
+          (vev.sqlite-index-tail-datom-count-bounded-raw
+            handle (u64 sqlite-index-novelty-datom-hard-limit))]
+    (when (not count-ok)
+      (return false count-error))
+    (when (or tail-exceeds
+              (> (+ tail-count (u64 appended-count))
+                 (u64 sqlite-index-novelty-datom-hard-limit)))
+      (return false
+        "SQLite log-only transaction exceeds the bounded novelty tail; checkpoint or split the transaction"))
+    (return true "")))
+
 (defn db-read-source-effective-basis [source: DB-Read-Source] -> [basis: u64, ok: bool]
   (case source.kind
+    .Resident (return (db-basis-tx source.db^) true)
+    .Shared-Resident-Indexes (return (db-basis-tx source.db^) true)
     .SQLite-Snapshot (return source.sqlite-snapshot^.basis-tx true)
     .SQLite-Tx-Ops-Overlay (return source.overlay-tx true)
     .SQLite-Datom-Overlay
@@ -866,6 +914,12 @@
   [store: ^SQLite-Conn, source: DB-Read-Source, tx: u64, tx-data: []Datom,
    tx-meta: []Tx-Meta, start-index: int, profile: ^SQLite-Direct-Write-Profile]
   -> [ok: bool, error: string]
+  ;; This check occurs inside the same writer transaction as the append, so no
+  ;; concurrent writer can grow the suffix between admission and commit.
+  (let [[room-ok room-error]
+          (sqlite-log-only-novelty-has-room? store^.handle (count tx-data))]
+    (when (not room-ok)
+      (return false room-error)))
   ;; The canonical next transaction entity is the definitive optimistic
   ;; generation check while the writer lock is held. A committed no-op can
   ;; advance the transaction table without adding a datom, so deriving current

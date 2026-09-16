@@ -1632,7 +1632,7 @@
 @export
 (defn vev_abi_version :abi "c" [] -> u32
   (odin "context = runtime.default_context()")
-  (u32 2))
+  (u32 3))
 
 @export
 (defn vev_sqlite_open_v2 :abi "c" [path: cstring, flags: int]
@@ -4535,6 +4535,71 @@
 (defn vev_db_query_value :abi "c" [db: Vev-DB, query-text: cstring] -> Vev-Value-Handle
   (odin "context = runtime.default_context()")
   (vev_db_query_value_with_inputs db query-text (cstring "[]")))
+
+(defn- query-page-error-value-handle
+  [code: vev.Query-Page-Error-Code, error: string] -> Vev-Value-Handle
+  (let [page (vev.query-page-error code error)]
+    (defer (vev.delete-query-page page))
+    (value-handle-from-owned-value (vev.query-page-owned-value page))))
+
+@export
+(defn vev_db_query_page_value :abi "c"
+  [db: Vev-DB, query-text: cstring, index-attr: cstring,
+   prefix-text: cstring, after-text: cstring, has-after: bool, limit: i64]
+  -> Vev-Value-Handle
+  (odin "context = runtime.default_context()")
+  (when (= (rawptr db) nil)
+    (return (query-page-error-value-handle
+              .InvalidRequest "q-page database handle was null")))
+  (when (or (= query-text nil) (= index-attr nil)
+            (= prefix-text nil) (and has-after (= after-text nil)))
+    (return (query-page-error-value-handle
+              .InvalidRequest "q-page request contains a null argument")))
+  (let [query-source (text-from-c query-text)
+        attr (text-from-c index-attr)
+        prefix-source (text-from-c prefix-text)
+        prepared (vev.prepare-query-text query-source)]
+    (defer (delete query-source))
+    (defer (delete attr))
+    (defer (delete prefix-source))
+    (defer (vev.delete-prepared-query-shallow prepared))
+    (when (not prepared.ok)
+      (return (query-page-error-value-handle
+                .InvalidRequest prepared.error)))
+    (let [[prefix prefix-ok prefix-error]
+            (vev.query-page-value-from-edn-text prefix-source)]
+      (defer (when prefix-ok (vev.delete-owned-value prefix)))
+      (when (not prefix-ok)
+        (return (query-page-error-value-handle
+                  .InvalidRequest prefix-error)))
+      (when (not (= prefix.kind .Vector))
+        (return (query-page-error-value-handle
+                  .InvalidRequest "q-page prefix must be a vector")))
+      (let [after-source (if has-after (text-from-c after-text) (string-owned "nil"))
+            [after after-ok after-error]
+              (vev.query-page-value-from-edn-text after-source)]
+        (defer (delete after-source))
+        (defer (when after-ok (vev.delete-owned-value after)))
+        (when (not after-ok)
+          (return (query-page-error-value-handle
+                    .InvalidRequest after-error)))
+        (let [request
+                (if has-after
+                  (vev.query-page-request-after
+                    attr (slice prefix.items 0) after (int limit))
+                  (vev.query-page-request
+                    attr (slice prefix.items 0) (int limit)))
+              store (store-db-ptr db)
+              [source source-ok source-error]
+                (vev.store-db-read-source store)]
+          (defer (vev.delete-query-page-request request))
+          (let [page
+                  (if source-ok
+                    (vev.q-page-query-source source prepared.query request)
+                    (vev.query-page-error .StorageError source-error))]
+            (defer (vev.delete-query-page page))
+            (value-handle-from-owned-value
+              (vev.query-page-owned-value page))))))))
 
 @export
 (defn vev_db_stats_value :abi "c" [db: Vev-DB] -> Vev-Value-Handle

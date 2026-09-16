@@ -37,6 +37,11 @@ transactions and survive closing and reopening the file.
 `db-before` and `db-after` values are cheap retained snapshot handles, not
 eager copies of the database.
 
+`q-page` returns a Data map with stable `:error-code` independently of its
+human-readable `:error`. Match `:none`, `:stale-basis`, `:invalid-request`,
+`:unsupported`, `:storage-error`, or `:internal-error`; do not classify the
+diagnostic text.
+
 Create a consistent durable backup without copying SQLite/WAL files directly:
 
 ```clojure

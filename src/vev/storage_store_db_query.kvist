@@ -210,21 +210,24 @@
   (let [[handle open-ok open-error] (vev.sqlite-open-live-raw path)]
     (when (not open-ok)
       (return false false open-error))
-    (let [[root-row-id row-ok row-error] (sqlite-index-root-row-id-at-basis handle published.basis-tx)]
+    (let [[root-row-id row-found row-ok row-error]
+            (sqlite-index-root-row-id-at-basis-status
+              handle published.basis-tx)]
       (vev.sqlite-close-live-raw handle)
       (when (not row-ok)
-        (if (= row-error "sqlite DB has no Vev index root for basis")
-          (return false true "")
-          (return false false row-error)))
+        (return false false row-error))
+      (when (not row-found)
+        (return false true ""))
       (return (= root-row-id published.root-row-id) true ""))))
 
 (defn sqlite-published-root-retained-handle? [handle: rawptr, basis-tx: u64, root-row-id: u64]
   -> [retained: bool, ok: bool, error: string]
-  (let [[stored-row-id row-ok row-error] (sqlite-index-root-row-id-at-basis handle basis-tx)]
+  (let [[stored-row-id row-found row-ok row-error]
+          (sqlite-index-root-row-id-at-basis-status handle basis-tx)]
     (when (not row-ok)
-      (if (= row-error "sqlite DB has no Vev index root for basis")
-        (return false true "")
-        (return false false row-error)))
+      (return false false row-error))
+    (when (not row-found)
+      (return false true ""))
     (return (= stored-row-id root-row-id) true "")))
 
 (defn sqlite-store-db-materialize-resident-at-basis! [snapshot: ^Store-DB, path: string, basis-tx: u64]
@@ -350,17 +353,20 @@
     .SQLite-Lazy-Snapshot
       (let [path (string-owned snapshot^.sqlite-lazy-path)
             basis-tx snapshot^.sqlite-lazy-basis-tx
-            [opened opened-ok opened-error] (sqlite-open-db-snapshot-at-basis path basis-tx sqlite-db-source-default-page-size)]
+            [opened opened-found opened-ok opened-error]
+              (sqlite-open-db-snapshot-at-basis-status
+                path basis-tx sqlite-db-source-default-page-size)]
         (when (not opened-ok)
-          (if (= opened-error "sqlite DB has no Vev index root for basis")
-            (let [[resident-ok resident-error] (sqlite-store-db-materialize-resident-at-basis! snapshot path basis-tx)]
-              (delete path)
-              (if resident-ok
-                (return (resident-db-read-source (addr snapshot^.resident)) true "")
-                (return (DB-Read-Source) false resident-error)))
-            (do
-              (delete path)
-              (return (DB-Read-Source) false opened-error))))
+          (delete path)
+          (return (DB-Read-Source) false opened-error))
+        (when (not opened-found)
+          (let [[resident-ok resident-error]
+                  (sqlite-store-db-materialize-resident-at-basis!
+                    snapshot path basis-tx)]
+            (delete path)
+            (if resident-ok
+              (return (resident-db-read-source (addr snapshot^.resident)) true "")
+              (return (DB-Read-Source) false resident-error))))
         (delete path)
         (delete snapshot^.sqlite-lazy-path)
         (set! snapshot^.sqlite-snapshot opened)

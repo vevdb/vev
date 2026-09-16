@@ -93,8 +93,8 @@ The durable schema separates semantic history from rebuildable acceleration:
 | `vev_tx_meta` | transaction metadata values | canonical, permanent |
 | selected `vev_datoms_*` SQLite indexes | log position, EAVT/entity, AVET, and ref-entity access paths | derived, retained for performance |
 | `vev_fulltext*`, `vev_text_terms` | text-search acceleration | derived |
-| `vev_index_roots`, `vev_index_root_pages` | immutable EAVT/AEVT/AVET/VAET checkpoints | derived; latest checkpoint retained |
-| `vev_index_run_manifests`, runs, and range tables | legacy/delta-root plans and cursor pruning | derived; not created by ordinary novelty commits |
+| `vev_index_roots`, `vev_index_root_pages` | immutable named index checkpoints, including the current-AVET page used by bounded keyset queries | derived; latest checkpoint retained |
+| `vev_index_run_manifests`, runs, and range tables | delta-root plans and cursor pruning, including current-AVET transaction runs | derived; not created by log-only novelty commits |
 | `vev_index_chunks`, entries, and edges | immutable B-tree-like checkpoint pages | derived; latest-reachable pages retained |
 | `vev_index_maintenance` | pending merge work | transient |
 | `vev_snapshots` | legacy serialized-store compatibility | legacy migration input |
@@ -106,6 +106,39 @@ range rows. A database value is composed from the latest immutable checkpoint
 and the canonical novelty after its basis. The novelty is replayed in
 transaction order and merged into index scans, pulls, validation, `history`,
 and immutable transaction reports.
+
+The narrow `q-page` API reads a unique composite-tuple driver in AVET order.
+At a persisted checkpoint it uses the separately named `:current-avet` page,
+whose logical identity is the full `(entity, attribute, value)` fact. Direct
+indexed publication appends small transaction-delta runs; maintenance preserves
+that page when it republishes another named index at the same basis, and full
+compaction collapses it to one exact live run. A normal SQLite novelty-tail
+database value merges its bounded in-memory tail with the persisted current
+page, so a committed transaction is page-queryable without first forcing a
+checkpoint.
+
+The canonical novelty suffix has a hard 4,096-datom admission bound, checked
+inside the SQLite writer transaction by a `vev_datoms(tx)` range probe. A
+log-only transaction which would cross that bound rolls back and asks the
+caller to publish a full checkpoint or split the transaction. Indexed resident
+writes publish their transaction-delta root in the same commit instead and do
+not create a novelty suffix. On reopen, including read-only reopen, Vev probes
+at most 4,097 indexed suffix rows before loading any novelty. An oversized
+legacy or crash-produced suffix is rejected explicitly and requires writable
+full-checkpoint repair; it is never silently materialized by `q-page`.
+
+`q-page` does not reconstruct a missing current page from the canonical log.
+A pre-current-page database remains usable through the ordinary APIs, but
+`q-page` reports that it is unavailable until a full checkpoint publishes the
+derived page. Likewise, an exact as-of page is available only while that basis
+root is retained; after root reclamation the API returns an explicit stale-basis
+error and the caller must refresh. It never substitutes the current root for a
+requested historical basis.
+
+If reclamation has already rematerialized a retained immutable SQLite value as
+a shared checkpoint-plus-overlay value, `q-page` uses the same current-AVET
+cursor and bounded overlay merge. This preserves continuation semantics across
+reclamation timing without retaining obsolete SQLite pages indefinitely.
 
 VevDB publishes a broad checkpoint when the novelty reaches either 128
 transactions or 4,096 datoms. Checkpoint publication and deletion of obsolete

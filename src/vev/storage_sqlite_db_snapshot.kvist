@@ -332,17 +332,23 @@
       (return (SQLite-DB-Snapshot) false basis-error))
     (sqlite-open-db-snapshot-handle-at-basis handle basis page-size)))
 
-(defn sqlite-open-db-snapshot-handle-at-basis-known-log [handle: rawptr, basis-tx: u64, page-size: int, datom-count: u64, has-retractions: bool] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
-      (let [[root-row-id root-ok root-error] (sqlite-index-root-row-id-at-basis handle basis-tx)]
+(defn sqlite-open-db-snapshot-handle-at-basis-known-log-status
+  [handle: rawptr, basis-tx: u64, page-size: int, datom-count: u64,
+   has-retractions: bool]
+  -> [snapshot: SQLite-DB-Snapshot, found: bool, ok: bool, error: string]
+      (let [[root-row-id root-found root-ok root-error]
+              (sqlite-index-root-row-id-at-basis-status handle basis-tx)]
         (when (not root-ok)
-          (return (SQLite-DB-Snapshot) false root-error))
+          (return (SQLite-DB-Snapshot) false false root-error))
+        (when (not root-found)
+          (return (SQLite-DB-Snapshot) false true ""))
       (let [[indexes indexes-ok indexes-error] (sqlite-open-index-snapshot-handle-at-basis handle basis-tx page-size)]
         (when (not indexes-ok)
-          (return (SQLite-DB-Snapshot) false indexes-error))
+          (return (SQLite-DB-Snapshot) false false indexes-error))
         (let [[datom-stmt datom-stmt-ok datom-stmt-error] (vev.sqlite-prepare-datom-by-log-index-raw handle)]
           (when (not datom-stmt-ok)
             (close-sqlite-index-snapshot indexes)
-            (return (SQLite-DB-Snapshot) false datom-stmt-error))
+            (return (SQLite-DB-Snapshot) false false datom-stmt-error))
         (return (SQLite-DB-Snapshot :indexes indexes
                                      :datom-stmt datom-stmt
                                      :datom-cache-log-indexes (sqlite-db-snapshot-empty-datom-cache-log-indexes)
@@ -355,7 +361,21 @@
                                      :datom-count (int datom-count)
                                      :has-retractions has-retractions)
                 true
+                true
                 "")))))
+
+(defn sqlite-open-db-snapshot-handle-at-basis-known-log
+  [handle: rawptr, basis-tx: u64, page-size: int, datom-count: u64,
+   has-retractions: bool]
+  -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
+  (let [[out-snapshot out-found out-ok out-error]
+          (sqlite-open-db-snapshot-handle-at-basis-known-log-status
+            handle basis-tx page-size datom-count has-retractions)]
+    (when (not out-ok)
+      (return out-snapshot false out-error))
+    (when (not out-found)
+      (return out-snapshot false "sqlite DB has no Vev index root for basis"))
+    (return out-snapshot true "")))
 
 (defn sqlite-open-db-snapshot-handle-at-root-set-known-log [handle: rawptr, published: SQLite-Durable-Published-Root, page-size: int, datom-count: u64, has-retractions: bool] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
       (let [basis-tx (if (> published.basis-tx 0) published.basis-tx published.root-row-id)
@@ -408,14 +428,29 @@
                     true
                     "")))))
 
-(defn sqlite-open-db-snapshot-handle-at-basis [handle: rawptr, basis-tx: u64, page-size: int] -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
+(defn sqlite-open-db-snapshot-handle-at-basis-status
+  [handle: rawptr, basis-tx: u64, page-size: int]
+  -> [snapshot: SQLite-DB-Snapshot, found: bool, ok: bool, error: string]
     (let [[datom-count datom-count-ok datom-count-error] (vev.sqlite-datom-count-raw handle)]
       (when (not datom-count-ok)
-        (return (SQLite-DB-Snapshot) false datom-count-error))
+        (return (SQLite-DB-Snapshot) false false datom-count-error))
       (let [[has-retractions retractions-ok retractions-error] (vev.sqlite-datom-has-retractions-raw handle)]
         (when (not retractions-ok)
-          (return (SQLite-DB-Snapshot) false retractions-error))
-        (sqlite-open-db-snapshot-handle-at-basis-known-log handle basis-tx page-size datom-count has-retractions))))
+          (return (SQLite-DB-Snapshot) false false retractions-error))
+        (sqlite-open-db-snapshot-handle-at-basis-known-log-status
+          handle basis-tx page-size datom-count has-retractions))))
+
+(defn sqlite-open-db-snapshot-handle-at-basis
+  [handle: rawptr, basis-tx: u64, page-size: int]
+  -> [snapshot: SQLite-DB-Snapshot, ok: bool, error: string]
+  (let [[out-snapshot out-found out-ok out-error]
+          (sqlite-open-db-snapshot-handle-at-basis-status
+            handle basis-tx page-size)]
+    (when (not out-ok)
+      (return out-snapshot false out-error))
+    (when (not out-found)
+      (return out-snapshot false "sqlite DB has no Vev index root for basis"))
+    (return out-snapshot true "")))
 
 (defn sqlite-conn-current-root-basis [store: ^SQLite-Conn] -> [basis: u64, ok: bool, error: string]
   (when store^.write-state-cache-valid

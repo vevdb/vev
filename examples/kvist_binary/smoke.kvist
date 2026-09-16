@@ -233,9 +233,107 @@
     (os.remove "vev-kvist-report-contract-smoke.db-wal")
     (os.remove "vev-kvist-report-contract-smoke.db-shm")))
 
+(defn bounded-query-page-smoke []
+  (let [path "vev-kvist-query-page-smoke.db"]
+    (os.remove path)
+    (os.remove "vev-kvist-query-page-smoke.db-wal")
+    (os.remove "vev-kvist-query-page-smoke.db-shm")
+    (let [seed-conn (d.connect path)]
+      (let [schema
+              (d.transact
+                seed-conn
+                [{:db/id 100
+                  :db/ident :entry/page-key
+                  :db/valueType :db.type/tuple
+                  :db/tupleAttrs [:entry/group :entry/revision :entry/id]
+                  :db/cardinality :db.cardinality/one
+                  :db/unique :db.unique/value}
+                 {:db/id 101 :db/ident :entry/group
+                  :db/cardinality :db.cardinality/one}
+                 {:db/id 102 :db/ident :entry/revision
+                  :db/cardinality :db.cardinality/one}
+                 {:db/id 103 :db/ident :entry/id
+                  :db/cardinality :db.cardinality/one}])]
+        (defer (d.close (addr schema)))
+        (when (not schema.ok)
+          (panic schema.error)))
+      (let [seed
+              (d.transact
+                seed-conn
+                [{:db/id 1 :entry/group "group-a"
+                  :entry/revision 1 :entry/id "a"}
+                 {:db/id 2 :entry/group "group-a"
+                  :entry/revision 2 :entry/id "b"}
+                 {:db/id 3 :entry/group "group-a"
+                  :entry/revision 2 :entry/id "c"}
+                 {:db/id 4 :entry/group "group-b"
+                  :entry/revision 1 :entry/id "outside"}])]
+        (defer (d.close (addr seed)))
+        (when (not seed.ok)
+          (panic seed.error)))
+      (d.close seed-conn))
+    ;; Reopening before the novelty threshold proves the public facade merges
+    ;; the ordinary durable log tail with the persisted current-AVET root. No
+    ;; explicit compaction/checkpoint is a precondition for q-page.
+    (let [query-conn (d.connect path)
+          db (d.db query-conn)
+            query '[:find ?entry ?key
+                    :where [?entry :entry/page-key ?key]]
+            first (d.q-page query db ":entry/page-key" ["group-a"] nil 2)]
+        (defer (d.close query-conn))
+        (defer (d.close db))
+        (defer (data.release first))
+        (let [rows (data.get-in first [:rows])
+              error-code (data.get-in first [:error-code])
+              next-key (data.get-in first [:next-key])
+              has-more (data.get-in first [:has-more])
+              materialized
+                (data.get-in first [:stats :generic-materialization-steps])]
+          (when (or (not (data.bool? (data.get-in first [:ok])))
+                    (not (data.bool (data.get-in first [:ok])))
+                    (not (data.keyword? error-code))
+                    (not (= (data.keyword error-code) ":none"))
+                    (not (data.vector? rows))
+                    (not (= (data.count rows) 2))
+                    (not (data.vector? next-key))
+                    (not (= (data.string (data.nth next-key 2)) "b"))
+                    (not (data.bool? has-more))
+                    (not (data.bool has-more))
+                    (not (data.int? materialized))
+                    (not (= (data.int materialized) 0)))
+            (let [text (edn.write first)]
+              (defer (delete text))
+              (fmt.eprintln "unexpected q-page:" text))
+            (panic "binary Kvist q-page did not preserve bounded page shape")))
+        (let [invalid
+                (d.q-page
+                  '[:find ?entry
+                    :where [?entry :entry/page-key ?key]]
+                  db ":entry/page-key" ["group-a"] nil 2)]
+          (defer (data.release invalid))
+          (let [code (data.get-in invalid [:error-code])]
+            (when (or (not (data.keyword? code))
+                      (not (= (data.keyword code) ":invalid-request")))
+              (panic "binary Kvist q-page lost typed invalid-request"))))
+        (let [second
+                (d.q-page query db ":entry/page-key" ["group-a"]
+                          (data.get-in first [:next-key]) 2)]
+          (defer (data.release second))
+          (let [rows (data.get-in second [:rows])]
+            (when (or (not (data.bool? (data.get-in second [:ok])))
+                      (not (data.bool (data.get-in second [:ok])))
+                      (not (data.vector? rows))
+                      (not (= (data.count rows) 1))
+                      (data.bool (data.get-in second [:has-more])))
+              (panic "binary Kvist q-page continuation duplicated or skipped rows")))))
+    (os.remove path)
+    (os.remove "vev-kvist-query-page-smoke.db-wal")
+    (os.remove "vev-kvist-query-page-smoke.db-shm")))
+
 (defn main []
   (resident-transaction-smoke)
   (datomic-report-contract-smoke)
+  (bounded-query-page-smoke)
   (let [uuid (d.squuid)]
     (defer (data.release uuid))
     (when (not (= (% (d.squuid-time-millis uuid) 1000) 0))

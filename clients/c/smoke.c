@@ -1019,6 +1019,48 @@ static int run_shaped_query_value_smoke(vev_db_t db) {
     return ok;
 }
 
+static int run_query_page_error_code_smoke(vev_db_t db) {
+    vev_value_handle_t page = vev_db_query_page_value(
+        db,
+        "[:find ?broken",
+        ":entry/page-key",
+        "[\"group-a\"]",
+        "nil",
+        false,
+        1);
+    if (page == NULL) return 0;
+    vev_value_t root = vev_value_handle_value(page);
+    vev_value_t ok_value = vev_value_map_get(root, ":ok");
+    vev_value_t code = vev_value_map_get(root, ":error-code");
+    int ok =
+        ok_value != NULL &&
+        vev_value_kind(ok_value) == VEV_VALUE_BOOL &&
+        !vev_value_bool(ok_value) &&
+        code != NULL &&
+        vev_value_kind(code) == VEV_VALUE_KEYWORD &&
+        vev_value_text_equals(code, VEV_QUERY_PAGE_ERROR_INVALID_REQUEST);
+    vev_value_handle_free(page);
+    vev_value_handle_t null_db_page = vev_db_query_page_value(
+        NULL,
+        "[:find ?entry ?key :where [?entry :entry/page-key ?key]]",
+        ":entry/page-key",
+        "[\"group-a\"]",
+        "nil",
+        false,
+        1);
+    if (null_db_page == NULL) return 0;
+    vev_value_t null_root = vev_value_handle_value(null_db_page);
+    vev_value_t null_code = vev_value_map_get(null_root, ":error-code");
+    int null_ok =
+        null_code != NULL &&
+        vev_value_kind(null_code) == VEV_VALUE_KEYWORD &&
+        vev_value_text_equals(
+            null_code,
+            VEV_QUERY_PAGE_ERROR_INVALID_REQUEST);
+    vev_value_handle_free(null_db_page);
+    return ok && null_ok;
+}
+
 int main(void) {
     printf("version: %s\n", vev_version());
     if (vev_abi_version() != VEV_ABI_VERSION) {
@@ -3290,6 +3332,15 @@ int main(void) {
     }
     if (!run_shaped_query_value_smoke(snapshot)) {
         fprintf(stderr, "Datomic-shaped query value smoke failed\n");
+        vev_db_release(snapshot);
+        vev_prepared_query_free(all_emails);
+        vev_stmt_free(stmt);
+        vev_prepared_query_free(query);
+        vev_conn_close(conn);
+        return 1;
+    }
+    if (!run_query_page_error_code_smoke(snapshot)) {
+        fprintf(stderr, "q-page typed error-code smoke failed\n");
         vev_db_release(snapshot);
         vev_prepared_query_free(all_emails);
         vev_stmt_free(stmt);

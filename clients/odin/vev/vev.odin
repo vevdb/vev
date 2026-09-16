@@ -6,7 +6,7 @@ import "base:runtime"
 import "core:strings"
 import "core:time"
 
-ABI_VERSION :: 2
+ABI_VERSION :: 3
 TX_PARTITION_BASE :: u64(4_611_686_018_427_387_904)
 
 @(private)
@@ -58,6 +58,7 @@ API :: struct {
 	with_edn_report: proc "c" (db: rawptr, tx_text: cstring) -> rawptr `dynlib:"vev_with_edn_report"`,
 	db_with_edn: proc "c" (db: rawptr, tx_text: cstring) -> rawptr `dynlib:"vev_db_with_edn"`,
 	db_query_value_with_inputs: proc "c" (db: rawptr, query_text, inputs_text: cstring) -> rawptr `dynlib:"vev_db_query_value_with_inputs"`,
+	db_query_page_value: proc "c" (db: rawptr, query_text, index_attr, prefix_text, after_text: cstring, has_after: bool, limit: i64) -> rawptr `dynlib:"vev_db_query_page_value"`,
 	db_entity: proc "c" (db: rawptr, entity: u64) -> rawptr `dynlib:"vev_db_entity"`,
 	db_entity_lookup_ref_string: proc "c" (db: rawptr, attr, value: cstring) -> rawptr `dynlib:"vev_db_entity_lookup_ref_string"`,
 	db_entity_lookup_ref_edn: proc "c" (db: rawptr, attr, value_edn: cstring) -> rawptr `dynlib:"vev_db_entity_lookup_ref_edn"`,
@@ -212,6 +213,15 @@ Kind :: enum int {
 	Instant,
 }
 
+Query_Page_Error_Code :: enum int {
+	None,
+	Stale_Basis,
+	Invalid_Request,
+	Unsupported,
+	Storage_Error,
+	Internal_Error,
+}
+
 library_filename :: proc() -> string {
 	when ODIN_OS == .Darwin {
 		return "libvev.dylib"
@@ -277,6 +287,7 @@ load :: proc(path: string) -> (library: Library, ok: bool) {
 	   library.api.with_edn_report == nil ||
 	   library.api.db_with_edn == nil ||
 	   library.api.db_query_value_with_inputs == nil ||
+	   library.api.db_query_page_value == nil ||
 	   library.api.db_entity == nil ||
 	   library.api.db_entity_lookup_ref_string == nil ||
 	   library.api.db_entity_lookup_ref_edn == nil ||
@@ -1410,6 +1421,61 @@ query_db :: proc(
 		return {}, false
 	}
 	return Data{library = database.library, handle = handle}, true
+}
+
+query_page_db :: proc(
+	database: ^DB,
+	query_text, index_attr, prefix_text: string,
+	after_text := "nil",
+	has_after := false,
+	limit: i64 = 100,
+) -> (result: Data, ok: bool) {
+	if database == nil || database.library == nil {
+		return {}, false
+	}
+	handle := database.library.api.db_query_page_value(
+		database.handle,
+		strings.clone_to_cstring(query_text, context.temp_allocator),
+		strings.clone_to_cstring(index_attr, context.temp_allocator),
+		strings.clone_to_cstring(prefix_text, context.temp_allocator),
+		strings.clone_to_cstring(after_text, context.temp_allocator),
+		has_after,
+		limit,
+	)
+	if handle == nil {
+		return {}, false
+	}
+	return Data{library = database.library, handle = handle}, true
+}
+
+query_page_error_code :: proc(page: ^Data) -> (code: Query_Page_Error_Code, ok: bool) {
+	root, root_ok := value(page)
+	if !root_ok {
+		return .Internal_Error, false
+	}
+	code_value, code_ok := get(root, ":error-code")
+	if !code_ok || kind(code_value) != .Keyword {
+		return .Internal_Error, false
+	}
+	text, text_ok := as_string(code_value, context.temp_allocator)
+	if !text_ok {
+		return .Internal_Error, false
+	}
+	switch text {
+	case ":none":
+		return .None, true
+	case ":stale-basis":
+		return .Stale_Basis, true
+	case ":invalid-request":
+		return .Invalid_Request, true
+	case ":unsupported":
+		return .Unsupported, true
+	case ":storage-error":
+		return .Storage_Error, true
+	case ":internal-error":
+		return .Internal_Error, true
+	}
+	return .Internal_Error, false
 }
 
 prepare :: proc(library: ^Library, query_text: string) -> (query: Prepared_Query, ok: bool) {

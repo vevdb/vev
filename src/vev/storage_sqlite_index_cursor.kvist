@@ -1,5 +1,12 @@
 (package vev)
 
+(defenum SQLite-Current-Ordered-Cursor-Error-Code [
+  None
+  StaleBasis
+  Unavailable
+  StorageError
+])
+
 (defn sqlite-open-index-cursor-handle [handle: rawptr, index-name: string, page-size: int] -> [out-cursor: SQLite-Index-Cursor, ok: bool, error: string]
   (when (<= page-size 0)
     (return (SQLite-Index-Cursor) false "sqlite index page size must be positive"))
@@ -18,7 +25,8 @@
                        (string-owned "eavt")
                        (if (= index-name ":aevt")
                          (string-owned "aevt")
-                         (if (= index-name ":avet")
+                         (if (or (= index-name ":avet")
+                                 (= index-name ":current-avet"))
                            (string-owned "avet")
                            (string-owned "vaet"))))
           root-is-merge (sqlite-index-merge-root-key? first-key)
@@ -97,7 +105,8 @@
                          (string-owned "eavt")
                          (if (= index-name ":aevt")
                            (string-owned "aevt")
-                           (if (= index-name ":avet")
+                           (if (or (= index-name ":avet")
+                                   (= index-name ":current-avet"))
                              (string-owned "avet")
                              (string-owned "vaet"))))
             root-is-merge (sqlite-index-merge-root-key? first-key)
@@ -954,7 +963,222 @@
 (defn sqlite-index-cursor-child-runs [cursor: ^SQLite-Index-Cursor] -> [roots: [dynamic]u64, counts: [dynamic]int, ok: bool, error: string]
   (if cursor^.root-is-manifest
     (sqlite-index-run-manifest-child-runs cursor^.handle cursor^.manifest-id)
-    (sqlite-index-merge-root-child-runs cursor^.handle cursor^.root-id)))
+    (if cursor^.root-is-merge
+      (sqlite-index-merge-root-child-runs cursor^.handle cursor^.root-id)
+      (return ([dynamic]u64 [cursor^.root-id])
+              ([dynamic]int [cursor^.row-count]) true ""))))
+
+(defn sqlite-index-merge-child-bound-values
+  [cursor: ^SQLite-Index-Cursor, child-index: int, values: []Value, strict: bool]
+  -> [position: int, ok: bool, error: string]
+  (let [low 0
+        high cursor^.merge-counts[child-index]]
+    (while (< low high)
+      (let [mid (/ (+ low high) 2)
+            [_ datom datom-ok datom-error]
+              (sqlite-index-merge-child-entry-and-datom-at-cached
+                cursor child-index mid)]
+        (when (not datom-ok)
+          (return low false datom-error))
+        (let [compare (datom-index-compare-values datom ":avet" values)]
+          (delete-owned-datom datom)
+          (if (or (< compare 0)
+                  (and strict (= compare 0)))
+            (set! low (+ mid 1))
+            (set! high mid)))))
+    (return low true "")))
+
+(defn sqlite-index-cursor-init-merge-state-at-values!
+  [cursor: ^SQLite-Index-Cursor, values: []Value, strict: bool]
+  -> [ok: bool, error: string]
+  (when (= cursor^.datom-stmt nil)
+    (let [[stmt stmt-ok stmt-error]
+            (vev.sqlite-prepare-datom-by-log-index-raw cursor^.handle)]
+      (when (not stmt-ok)
+        (return false stmt-error))
+      (set! cursor^.datom-stmt stmt)))
+  (sqlite-index-cursor-clear-merge-state! cursor)
+  (let [[roots counts runs-ok runs-error]
+          (sqlite-index-cursor-child-runs cursor)]
+    (when (not runs-ok)
+      (delete roots)
+      (delete counts)
+      (return false runs-error))
+    (delete cursor^.merge-roots)
+    (delete cursor^.merge-counts)
+    (set! cursor^.merge-roots roots)
+    (set! cursor^.merge-counts counts)
+    (for [child-index (arr.range 0 (count cursor^.merge-roots))]
+      (arr.push! cursor^.merge-loaded-pages (SQLite-Loaded-Index-Page))
+      (arr.push! cursor^.merge-loaded-page-valid false)
+      (let [[position bound-ok bound-error]
+              (sqlite-index-merge-child-bound-values
+                cursor child-index values strict)]
+        (when (not bound-ok)
+          (sqlite-index-cursor-clear-merge-state! cursor)
+          (return false bound-error))
+        (arr.push! cursor^.merge-positions position)
+        (if (< position cursor^.merge-counts[child-index])
+          (let [[entry datom entry-ok entry-error]
+                  (sqlite-index-merge-child-entry-and-datom-at-cached
+                    cursor child-index position)]
+            (when (not entry-ok)
+              (sqlite-index-cursor-clear-merge-state! cursor)
+              (return false entry-error))
+            (arr.push! cursor^.merge-current-datoms datom)
+            (arr.push! cursor^.merge-current-entries entry)
+            (arr.push! cursor^.merge-has-current true))
+          (do
+            (arr.push! cursor^.merge-current-datoms (Datom))
+            (arr.push! cursor^.merge-current-entries 0)
+            (arr.push! cursor^.merge-has-current false)))))
+    (set! cursor^.merge-ready true)
+    (set! cursor^.merge-next-output 0)
+    (return true "")))
+
+(defn sqlite-index-cursor-merge-has-entry? [cursor: ^SQLite-Index-Cursor] -> bool
+  (for [has-current cursor^.merge-has-current]
+    (when has-current
+      (return true)))
+  false)
+
+(defstruct SQLite-Current-Ordered-Cursor [
+  index: SQLite-Index-Cursor
+  entries-visited: int
+  runs-opened: int
+  pending: Datom
+  pending-entry: int
+  has-pending: bool
+])
+
+(defn sqlite-open-current-ordered-cursor-handle-at-basis-typed
+  [handle: rawptr, basis-tx: u64, start-values: []Value, strict: bool,
+   page-size: int]
+  -> [cursor: SQLite-Current-Ordered-Cursor,
+      error-code: SQLite-Current-Ordered-Cursor-Error-Code,
+      ok: bool, error: string]
+  (let [[_root-row basis-found basis-ok basis-error]
+          (sqlite-index-root-row-id-at-basis-status handle basis-tx)]
+    (when (not basis-ok)
+      (return (SQLite-Current-Ordered-Cursor) .StorageError false basis-error))
+    (when (not basis-found)
+      (return (SQLite-Current-Ordered-Cursor) .StaleBasis false
+        "q-page stale basis: SQLite index root is not retained")))
+  (let [[_current-root _current-manifest current-found current-ok current-error]
+          (vev.sqlite-index-root-page-at-basis-raw
+            handle ":current-avet" basis-tx)]
+    (when (not current-ok)
+      (return (SQLite-Current-Ordered-Cursor) .StorageError false current-error))
+    (when (not current-found)
+      (return (SQLite-Current-Ordered-Cursor) .Unavailable false
+        "q-page unavailable: SQLite basis has no persisted current AVET root; publish a full checkpoint")))
+  (let [[index index-ok index-error]
+          (sqlite-open-index-cursor-handle-at-basis
+            handle ":current-avet" basis-tx page-size)]
+    (when (not index-ok)
+      (return (SQLite-Current-Ordered-Cursor) .StorageError false index-error))
+    (let [out
+            (SQLite-Current-Ordered-Cursor
+              :index index
+              :entries-visited 0
+              :runs-opened 0
+              :pending (Datom)
+              :pending-entry 0
+              :has-pending false)
+          [init-ok init-error]
+            (sqlite-index-cursor-init-merge-state-at-values!
+              (addr out.index) start-values strict)]
+      (when (not init-ok)
+        (close-sqlite-index-cursor out.index)
+        (return (SQLite-Current-Ordered-Cursor) .StorageError false init-error))
+      (set! out.runs-opened (count out.index.merge-roots))
+      (return out .None true ""))))
+
+(defn sqlite-open-current-ordered-cursor-handle-at-basis
+  [handle: rawptr, basis-tx: u64, start-values: []Value, strict: bool,
+   page-size: int]
+  -> [cursor: SQLite-Current-Ordered-Cursor, ok: bool, error: string]
+  (let [[out-cursor _error-code out-ok out-error]
+          (sqlite-open-current-ordered-cursor-handle-at-basis-typed
+            handle basis-tx start-values strict page-size)]
+    (return out-cursor out-ok out-error)))
+
+(defn sqlite-current-ordered-cursor-raw-next!
+  [cursor: ^SQLite-Current-Ordered-Cursor]
+  -> [out-entry: int, out-datom: Datom, found: bool, ok: bool, error: string]
+  (when cursor^.has-pending
+    (let [entry cursor^.pending-entry
+          datom cursor^.pending]
+      (set! cursor^.pending (Datom))
+      (set! cursor^.pending-entry 0)
+      (set! cursor^.has-pending false)
+      (return entry datom true true "")))
+  (when (not (sqlite-index-cursor-merge-has-entry? (addr cursor^.index)))
+    (return 0 (Datom) false true ""))
+  (let [[entry datom entry-ok entry-error]
+          (sqlite-index-cursor-produce-next-merge-entry!
+            (addr cursor^.index))]
+    (when (not entry-ok)
+      (return 0 (Datom) false false entry-error))
+    (set! cursor^.entries-visited (+ cursor^.entries-visited 1))
+    (return entry datom true true "")))
+
+(defn sqlite-current-ordered-logical-key-equal?
+  [left: Datom, right: Datom] -> bool
+  (and (= left.e right.e)
+       (= left.a right.a)
+       (value-equal? left.v right.v)))
+
+(defn sqlite-current-ordered-candidate-newer?
+  [candidate: Datom, candidate-entry: int,
+   current: Datom, current-entry: int] -> bool
+  (if (not (= candidate.tx current.tx))
+    (> candidate.tx current.tx)
+    (if (not (= candidate.added current.added))
+      candidate.added
+      (> candidate-entry current-entry))))
+
+(defn sqlite-current-ordered-cursor-next!
+  [cursor: ^SQLite-Current-Ordered-Cursor]
+  -> [datom: Datom, found: bool, ok: bool, error: string]
+  (while true
+    (let [[winner-entry winner winner-found winner-ok winner-error]
+            (sqlite-current-ordered-cursor-raw-next! cursor)]
+      (when (not winner-ok)
+        (return (Datom) false false winner-error))
+      (when (not winner-found)
+        (return (Datom) false true ""))
+      (while true
+        (let [[candidate-entry candidate candidate-found candidate-ok candidate-error]
+                (sqlite-current-ordered-cursor-raw-next! cursor)]
+          (when (not candidate-ok)
+            (delete-owned-datom winner)
+            (return (Datom) false false candidate-error))
+          (when (not candidate-found)
+            (break))
+          (if (sqlite-current-ordered-logical-key-equal? winner candidate)
+            (if (sqlite-current-ordered-candidate-newer?
+                  candidate candidate-entry winner winner-entry)
+              (do
+                (delete-owned-datom winner)
+                (set! winner candidate)
+                (set! winner-entry candidate-entry))
+              (delete-owned-datom candidate))
+            (do
+              (set! cursor^.pending candidate)
+              (set! cursor^.pending-entry candidate-entry)
+              (set! cursor^.has-pending true)
+              (break)))))
+      (if winner.added
+        (return winner true true "")
+        (delete-owned-datom winner))))
+  (return (Datom) false true ""))
+
+(defn close-sqlite-current-ordered-cursor
+  [cursor: SQLite-Current-Ordered-Cursor]
+  (when cursor.has-pending
+    (delete-owned-datom cursor.pending))
+  (close-sqlite-index-cursor cursor.index))
 
 (defn sqlite-index-cursor-init-merge-state! [cursor: ^SQLite-Index-Cursor] -> [ok: bool, error: string]
   (when (= cursor^.datom-stmt nil)

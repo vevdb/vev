@@ -1,0 +1,918 @@
+(package vev)
+
+(import arr "kvist:arr")
+(import edn "kvist:edn")
+
+(def query-page-max-limit 1024)
+
+(defenum Query-Page-Error-Code [
+  None
+  StaleBasis
+  InvalidRequest
+  Unsupported
+  StorageError
+  InternalError
+])
+
+(defstruct Query-Page-Request [
+  index-attr: string
+  prefix: [dynamic]Value
+  after: Value
+  has-after: bool
+  limit: int
+])
+
+(defstruct Query-Page-Plan [
+  ok: bool
+  error-code: Query-Page-Error-Code
+  error: string
+  index-attr: string
+  entity-var: string
+  key-var: string
+  tuple-width: int
+  schema-index-entries-visited: int
+  prefix: [dynamic]Value
+  after: Value
+  has-after: bool
+  limit: int
+])
+
+(defstruct Query-Page-Stats [
+  index-seeks: int
+  schema-index-entries-visited: int
+  index-entries-visited: int
+  rows-emitted: int
+  lookahead-rows: int
+  storage-pages-loaded: int
+  storage-runs-opened: int
+  generic-materialization-steps: int
+])
+
+(defstruct Query-Page [
+  result: Result-Set
+  error-code: Query-Page-Error-Code
+  next-key: Value
+  has-next-key: bool
+  stats: Query-Page-Stats
+])
+
+(defn query-page-request [index-attr: string, prefix: []Value, limit: int]
+  -> Query-Page-Request
+  (Query-Page-Request :index-attr index-attr
+                       :prefix (arr.into [dynamic]Value prefix)
+                       :after (Value)
+                       :has-after false
+                       :limit limit))
+
+(defn query-page-request-after
+  [index-attr: string, prefix: []Value, after: Value, limit: int]
+  -> Query-Page-Request
+  (Query-Page-Request :index-attr index-attr
+                       :prefix (arr.into [dynamic]Value prefix)
+                       :after after
+                       :has-after true
+                       :limit limit))
+
+(defn delete-query-page-request [request: Query-Page-Request]
+  (delete request.prefix))
+
+(defn query-page-plan-error
+  [error-code: Query-Page-Error-Code, error: string] -> Query-Page-Plan
+  (Query-Page-Plan :ok false
+                    :error-code error-code
+                    :error error
+                    :index-attr ""
+                    :entity-var ""
+                    :key-var ""
+                    :tuple-width 0
+                    :schema-index-entries-visited 0
+                    :prefix (make [dynamic]Value)
+                    :after (Value)
+                    :has-after false
+                    :limit 0))
+
+(defn delete-query-page-plan [plan: Query-Page-Plan]
+  (delete plan.prefix))
+
+(defn delete-query-page [page: Query-Page]
+  (delete-result-set-owned-values page.result)
+  (when page.has-next-key
+    (delete-owned-value page.next-key)))
+
+(defn query-page-program-simple? [query: Query] -> bool
+  (and (= (count query.find) 2)
+       (= (count query.with) 0)
+       (= (count query.inputs) 0)
+       (= (count query.collection-inputs) 0)
+       (= (count query.tuple-inputs) 0)
+       (= (count query.relation-inputs) 0)
+       (= (count query.input-specs) 0)
+       (not query.has-rules-input)
+       (= (count query.clauses) 1)
+       (= (count query.predicates) 0)
+       (= (count query.function-clauses) 0)
+       (= (count query.rules) 0)
+       (= (count query.rule-calls) 0)
+       (= (count query.get-elses) 0)
+       (= (count query.get-somes) 0)
+       (= (count query.grounds) 0)
+       (= (count query.not-groups) 0)
+       (= (count query.or-groups) 0)
+       (= (count query.pulls) 0)
+       (= (count query.aggregates) 0)
+       (= (count query.where-steps) 1)
+       (= query.where-steps[0].kind .Clause)
+       (= query.where-steps[0].index 0)))
+
+(defn query-page-prefix-matches? [tuple: Value, prefix: []Value] -> bool
+  (when (or (not (= tuple.kind .Vector))
+            (> (count prefix) (count tuple.items)))
+    (return false))
+  (for [expected index prefix]
+    (when (not (value-equal? tuple.items[index] expected))
+      (return false)))
+  true)
+
+(defn query-page-versionless-current-source? [source: DB-Read-Source] -> bool
+  (or (= source.kind .Resident)
+      (= source.kind .Shared-Resident-Indexes)
+      (= source.kind .Shared-Resident-Datoms-And-Indexes)
+      (= source.kind .Shared-Tx-Ops-Overlay)
+      (= source.kind .Shared-Datom-Overlay)
+      (= source.kind .Shared-Datom-Log-Overlay)))
+
+(defn query-page-filter-is-exact-source-basis?
+  [source: DB-Read-Source] -> bool
+  (when (not source.filter-has-as-of)
+    (return true))
+  (let [[basis basis-ok] (db-read-source-effective-basis source)]
+    (and basis-ok (= source.filter-as-of-tx basis))))
+
+(defn query-page-resident-schema-proof
+  [db: ^DB, attr: string]
+  -> [tuple-width: int, unique: bool, entries-visited: int,
+      error-code: Query-Page-Error-Code,
+      ok: bool, error: string]
+  ;; Bind the complete ident key in the immutable current AVET. A stale or
+  ;; unrelated cache entry can therefore never authorize a page driver.
+  (let [values
+          ([]Value [(value-keyword ":db/ident")
+                    (value-keyword attr)])
+        cursor (resident-current-ordered-cursor db values false)
+        [ident found]
+          (current-ordered-cursor-next-resident! (addr cursor))]
+    (when (or (not found)
+              (not (= ident.a ":db/ident"))
+              (not (= ident.v.kind .Keyword))
+              (not (= ident.v.text attr)))
+      (return 0 false cursor.entries-visited .None true ""))
+    (let [[width width-ok] (mmap.get db^.schema-tuple-widths attr)]
+      (return (if width-ok width 0)
+              (set.contains? db^.schema-unique attr)
+              cursor.entries-visited .None true ""))))
+
+(defn query-page-shared-schema-proof
+  [datoms: ^Shared-Datom-Log, indexes: ^Shared-DB-Int-Indexes,
+   attr: string]
+  -> [tuple-width: int, unique: bool, entries-visited: int,
+      error-code: Query-Page-Error-Code,
+      ok: bool, error: string]
+  (let [values
+          ([]Value [(value-keyword ":db/ident")
+                    (value-keyword attr)])
+        [cursor cursor-ok cursor-error]
+          (shared-current-ordered-cursor datoms indexes values false)]
+    (when (not cursor-ok)
+      (return 0 false 0 .StorageError false cursor-error))
+    (let [[ident found next-ok next-error]
+            (shared-current-ordered-cursor-next! (addr cursor))]
+      (when (not next-ok)
+        (return 0 false cursor.entries-visited .StorageError false next-error))
+      (when (or (not found)
+                (not (= ident.a ":db/ident"))
+                (not (= ident.v.kind .Keyword))
+                (not (= ident.v.text attr)))
+        (return 0 false cursor.entries-visited .None true ""))
+      (let [cache indexes^.page-schema-cache]
+        (when (= cache.state nil)
+          (return 0 false cursor.entries-visited .InternalError false
+            "q-page shared snapshot is missing its current schema proof cache"))
+        (let [[width width-ok]
+                (mmap.get cache.state^.tuple-widths attr)]
+          (return (if width-ok width 0)
+                  (set.contains? cache.state^.unique attr)
+                  cursor.entries-visited .None true ""))))))
+
+(defn query-page-sqlite-schema-proof
+  [snapshot: ^SQLite-DB-Snapshot, basis-tx: u64, attr: string]
+  -> [tuple-width: int, unique: bool, entries-visited: int,
+      error-code: Query-Page-Error-Code,
+      ok: bool, error: string]
+  (let [values
+          ([]Value [(value-keyword ":db/ident")
+                    (value-keyword attr)])
+        [cursor cursor-error-code cursor-ok cursor-error]
+          (sqlite-open-current-ordered-cursor-handle-at-basis-typed
+            snapshot^.indexes.handle basis-tx values false
+            snapshot^.indexes.page-size)]
+    (when (not cursor-ok)
+      (return 0 false 0
+        (case cursor-error-code
+          .StaleBasis .StaleBasis
+          .Unavailable .Unsupported
+          .StorageError .StorageError
+          .StorageError)
+        false cursor-error))
+    (defer (close-sqlite-current-ordered-cursor cursor))
+    (let [[ident found next-ok next-error]
+            (sqlite-current-ordered-cursor-next! (addr cursor))]
+      (when (not next-ok)
+        (return 0 false cursor.entries-visited .StorageError false next-error))
+      (when (or (not found)
+                (not (= ident.a ":db/ident"))
+                (not (= ident.v.kind .Keyword))
+                (not (= ident.v.text attr)))
+        (return 0 false cursor.entries-visited .None true ""))
+      (let [[tuple-text tuple-added tuple-found tuple-ok tuple-error]
+              (vev.sqlite-latest-entity-attr-value-at-basis-raw
+                snapshot^.indexes.handle ident.e ":db/tupleAttrs" basis-tx)]
+        (defer (delete tuple-text))
+        (when (not tuple-ok)
+          (return 0 false cursor.entries-visited .StorageError false tuple-error))
+        (let [computed-width 0]
+          (when (and tuple-found tuple-added)
+            (let [[tuple-value value-ok value-error]
+                    (value-from-owned-serial-text tuple-text)]
+              (when (not value-ok)
+                (return 0 false cursor.entries-visited .StorageError false value-error))
+              (defer (delete-owned-value tuple-value))
+              (when (= tuple-value.kind .Vector)
+                (set! computed-width (count tuple-value.items)))))
+          (let [[unique-text unique-added unique-found unique-ok unique-error]
+                  (vev.sqlite-latest-entity-attr-value-at-basis-raw
+                    snapshot^.indexes.handle ident.e ":db/unique" basis-tx)]
+            (defer (delete unique-text))
+            (when (not unique-ok)
+              (return 0 false cursor.entries-visited .StorageError false unique-error))
+            (let [is-unique false]
+              (when (and unique-found unique-added)
+                (let [[unique-value value-ok value-error]
+                        (value-from-owned-serial-text unique-text)]
+                  (when (not value-ok)
+                    (return 0 false cursor.entries-visited .StorageError false value-error))
+                  (defer (delete-owned-value unique-value))
+                  (set! is-unique
+                    (and (= unique-value.kind .Keyword)
+                         (or (= unique-value.text ":db.unique/value")
+                             (= unique-value.text ":db.unique/identity"))))))
+              (return computed-width is-unique cursor.entries-visited
+                      .None true ""))))))))
+
+(defn query-page-overlay-modifies-schema?
+  [source: DB-Read-Source] -> [modified: bool, ok: bool, error: string]
+  (when (or (= source.kind .Shared-Tx-Ops-Overlay)
+            (= source.kind .SQLite-Tx-Ops-Overlay))
+    (for [op source.overlay-ops^]
+      (when (datom-modifies-db-schema?
+              (Datom :a op.a))
+        (return true true "")))
+    (return false true ""))
+  (when (or (= source.kind .Shared-Datom-Overlay)
+            (= source.kind .SQLite-Datom-Overlay))
+    (for [datom source.overlay-datoms^]
+      (when (datom-modifies-db-schema? datom)
+        (return true true "")))
+    (return false true ""))
+  (when (or (= source.kind .Shared-Datom-Log-Overlay)
+            (= source.kind .SQLite-Datom-Log-Overlay))
+    (for [index (arr.range 0 source.overlay-log^.count)]
+      (let [[datom found] (shared-datom-log-at source.overlay-log^ index)]
+        (when (not found)
+          (return false false "q-page schema overlay log was missing a datom"))
+        (let [modified (datom-modifies-db-schema? datom)]
+          (delete-owned-datom datom)
+          (when modified
+            (return true true "")))))
+    (return false true ""))
+  (return false true ""))
+
+(defn query-page-schema-proof
+  [source: DB-Read-Source, attr: string]
+  -> [tuple-width: int, unique: bool, entries-visited: int,
+      error-code: Query-Page-Error-Code,
+      ok: bool, error: string]
+  (let [[schema-overlay schema-overlay-ok schema-overlay-error]
+          (query-page-overlay-modifies-schema? source)]
+    (when (not schema-overlay-ok)
+      (return 0 false 0 .StorageError false schema-overlay-error))
+    (when schema-overlay
+      (return 0 false 0 .Unsupported false
+        "q-page does not support schema-changing immutable overlays")))
+  (when (or (= source.kind .Resident)
+            (= source.kind .Shared-Resident-Indexes))
+    (return (query-page-resident-schema-proof source.db attr)))
+  (when (or (= source.kind .Shared-Resident-Datoms-And-Indexes)
+            (= source.kind .Shared-Tx-Ops-Overlay)
+            (= source.kind .Shared-Datom-Overlay)
+            (= source.kind .Shared-Datom-Log-Overlay))
+    (return
+      (query-page-shared-schema-proof
+        source.shared-datoms source.shared-indexes attr)))
+  (when (or (= source.kind .SQLite-Snapshot)
+            (= source.kind .SQLite-Tx-Ops-Overlay)
+            (= source.kind .SQLite-Datom-Overlay)
+            (= source.kind .SQLite-Datom-Log-Overlay))
+    (return
+      (query-page-sqlite-schema-proof
+        source.sqlite-snapshot (query-page-sqlite-base-basis source) attr)))
+  (return 0 false 0 .Unsupported false
+    "q-page source has no bounded current schema proof"))
+
+(defn query-page-plan-source
+  [source: DB-Read-Source, query: Query, request: Query-Page-Request]
+  -> Query-Page-Plan
+  (when (or (<= request.limit 0)
+            (> request.limit query-page-max-limit))
+    (return (query-page-plan-error .InvalidRequest
+              "q-page limit must be between 1 and 1024")))
+  (let [overlay-size (query-page-overlay-size source)]
+    (when (> overlay-size sqlite-index-novelty-datom-hard-limit)
+      (return (query-page-plan-error .Unsupported
+                "q-page overlay exceeds the bounded candidate limit"))))
+  ;; A resident/shared value is immutable and therefore exact at its own
+  ;; effective basis. Older filtered as-of still needs a versioned current
+  ;; root; never substitute the resident value for that historical state.
+  (when (and source.filter-has-as-of
+             (query-page-versionless-current-source? source)
+             (not (query-page-filter-is-exact-source-basis? source)))
+    (return (query-page-plan-error .StaleBasis
+              "q-page does not support filtered resident as-of without a versioned current root")))
+  (when (not (query-page-source-supported? source))
+    (return (query-page-plan-error .Unsupported
+              "q-page source must be resident, SQLite, or a bounded immutable overlay; since and history are unsupported")))
+  (when (not (query-page-program-simple? query))
+    (return (query-page-plan-error .InvalidRequest
+              "q-page requires one entity and tuple-key candidate projection clause")))
+  (let [clause: Clause query.clauses[0]]
+    (when (or clause.has-source
+              (not (= clause.e.kind .Var))
+              (not (= clause.a.kind .Value))
+              (not (= clause.a.value.kind .Keyword))
+              (not (= clause.a.value.text request.index-attr))
+              (not (= clause.v.kind .Var))
+              (not (= clause.e.name query.find[0]))
+              (not (= clause.v.name query.find[1]))
+              (not (= clause.tx-term.kind .Wildcard))
+              (not (= clause.op-term.kind .Wildcard)))
+      (return (query-page-plan-error .InvalidRequest
+                "q-page query must project entity then key from its declared driver clause")))
+    (let [[tuple-width unique schema-entries schema-error-code
+           schema-ok schema-error]
+            (query-page-schema-proof source request.index-attr)]
+      (when (not schema-ok)
+        (return (query-page-plan-error schema-error-code schema-error)))
+      (when (< tuple-width 2)
+        (return (query-page-plan-error .Unsupported
+                  "q-page driver must be a composite tuple attribute")))
+      (when (not unique)
+        (return (query-page-plan-error .Unsupported
+                  "q-page driver must be unique")))
+      (when (or (= (count request.prefix) 0)
+                (>= (count request.prefix) tuple-width))
+        (return (query-page-plan-error .InvalidRequest
+                  "q-page prefix must bind a proper non-empty tuple prefix")))
+      (when request.has-after
+        (when (or (not (= request.after.kind .Vector))
+                  (not (= (count request.after.items) tuple-width))
+                  (not (query-page-prefix-matches?
+                         request.after (slice request.prefix 0))))
+          (return (query-page-plan-error .InvalidRequest
+                    "q-page after must be a full tuple matching the bound prefix"))))
+      (return
+        (Query-Page-Plan
+          :ok true
+          :error-code .None
+          :error ""
+          :index-attr request.index-attr
+          :entity-var clause.e.name
+          :key-var clause.v.name
+          :tuple-width tuple-width
+          :schema-index-entries-visited schema-entries
+          :prefix (arr.into [dynamic]Value (slice request.prefix 0))
+          :after request.after
+          :has-after request.has-after
+          :limit request.limit)))))
+
+(defn query-page-source-supported? [source: DB-Read-Source] -> bool
+  (and (or (= source.kind .Resident)
+           (= source.kind .Shared-Resident-Datoms-And-Indexes)
+           (= source.kind .SQLite-Snapshot)
+           (= source.kind .SQLite-Tx-Ops-Overlay)
+           (= source.kind .SQLite-Datom-Overlay)
+           (= source.kind .SQLite-Datom-Log-Overlay)
+           (= source.kind .Shared-Tx-Ops-Overlay)
+           (= source.kind .Shared-Datom-Overlay)
+           (= source.kind .Shared-Datom-Log-Overlay))
+       (not source.filter-has-since)
+       (not source.filter-history)))
+
+(defn query-page-plan-resident
+  [db: DB, query: Query, request: Query-Page-Request] -> Query-Page-Plan
+  (let [borrowed db]
+    (query-page-plan-source
+      (resident-db-read-source (addr borrowed)) query request)))
+
+(defn query-page-empty-stats [] -> Query-Page-Stats
+  (Query-Page-Stats))
+
+(defn query-page-error-code-from-sqlite-cursor
+  [code: SQLite-Current-Ordered-Cursor-Error-Code]
+  -> Query-Page-Error-Code
+  (case code
+    .StaleBasis .StaleBasis
+    .Unavailable .Unsupported
+    .StorageError .StorageError
+    .StorageError))
+
+(defn query-page-error
+  [error-code: Query-Page-Error-Code, error: string] -> Query-Page
+  (Query-Page :result (result-set-error error)
+              :error-code error-code
+              :next-key (Value)
+              :has-next-key false
+              :stats (query-page-empty-stats)))
+
+(defn query-page-append-candidate!
+  [rows: ^[dynamic]Result-Row, entity: u64, key: Value]
+  (let [values (make [dynamic]Value 0 2)
+        pulls (make [dynamic]Pull-Result)]
+    (arr.push! values (value-entity entity))
+    (arr.push! values (value-owned key))
+    (arr.push! rows^ (Result-Row :values values :pulls pulls))))
+
+(defn query-page-finish
+  [rows: [dynamic]Result-Row, has-more: bool, stats: Query-Page-Stats]
+  -> Query-Page
+  (let [next-key (Value)]
+    (when (and has-more (> (count rows) 0))
+      (set! next-key (value-owned rows[(- (count rows) 1)].values[1])))
+    (Query-Page :result (result-set-ok rows)
+                :error-code .None
+                :next-key next-key
+                :has-next-key has-more
+                :stats stats)))
+
+(defn query-page-start-key [plan: Query-Page-Plan] -> Value
+  (if plan.has-after
+    plan.after
+    (value-vector (slice plan.prefix 0))))
+
+(defn query-page-resident-execute-plan [db: ^DB, plan: Query-Page-Plan]
+  -> Query-Page
+  (let [start-key (query-page-start-key plan)
+        start-values ([]Value [(value-keyword plan.index-attr) start-key])
+        cursor (resident-current-ordered-cursor db start-values plan.has-after)
+        rows (make [dynamic]Result-Row 0 plan.limit)
+        stats (query-page-empty-stats)
+        has-more false]
+    (when (not plan.has-after)
+      (defer (delete start-key.items)))
+    (set! stats.index-seeks 1)
+    (while true
+      (let [[datom found]
+              (current-ordered-cursor-next-resident! (addr cursor))]
+        (when (not found)
+          (break))
+        (when (or (not (= datom.a plan.index-attr))
+                  (not (query-page-prefix-matches?
+                         datom.v (slice plan.prefix 0))))
+          (break))
+        (if (< (count rows) plan.limit)
+          (query-page-append-candidate! (addr rows) datom.e datom.v)
+          (do
+            (set! has-more true)
+            (set! stats.lookahead-rows 1)
+            (break)))))
+    (set! stats.index-entries-visited cursor.entries-visited)
+    (set! stats.rows-emitted (count rows))
+    (query-page-finish rows has-more stats)))
+
+(defn query-page-sqlite-overlay? [source: DB-Read-Source] -> bool
+  (or (= source.kind .SQLite-Tx-Ops-Overlay)
+      (= source.kind .SQLite-Datom-Overlay)
+      (= source.kind .SQLite-Datom-Log-Overlay)))
+
+(defn query-page-shared-overlay? [source: DB-Read-Source] -> bool
+  (or (= source.kind .Shared-Tx-Ops-Overlay)
+      (= source.kind .Shared-Datom-Overlay)
+      (= source.kind .Shared-Datom-Log-Overlay)))
+
+(defn query-page-overlay-size [source: DB-Read-Source] -> int
+  (case source.kind
+    .SQLite-Tx-Ops-Overlay (count source.overlay-ops^)
+    .SQLite-Datom-Overlay (count source.overlay-datoms^)
+    .SQLite-Datom-Log-Overlay source.overlay-log^.count
+    .Shared-Tx-Ops-Overlay (count source.overlay-ops^)
+    .Shared-Datom-Overlay (count source.overlay-datoms^)
+    .Shared-Datom-Log-Overlay source.overlay-log^.count
+     0))
+
+(defn query-page-shared-execute-plan
+  [source: DB-Read-Source, plan: Query-Page-Plan] -> Query-Page
+  (let [start-key (query-page-start-key plan)
+        start-values ([]Value [(value-keyword plan.index-attr) start-key])
+        [cursor cursor-ok cursor-error]
+          (shared-current-ordered-cursor
+            source.shared-datoms source.shared-indexes
+            start-values plan.has-after)]
+    (when (not plan.has-after)
+      (defer (delete start-key.items)))
+    (when (not cursor-ok)
+      (return (query-page-error .StorageError cursor-error)))
+    (let [rows (make [dynamic]Result-Row 0 plan.limit)
+          stats (query-page-empty-stats)
+          has-more false]
+      (set! stats.index-seeks 1)
+      (while true
+        (let [[datom found next-ok next-error]
+                (shared-current-ordered-cursor-next! (addr cursor))]
+          (when (not next-ok)
+            (delete-result-rows-owned-values rows)
+            (return (query-page-error .StorageError next-error)))
+          (when (not found)
+            (break))
+          (when (or (not (= datom.a plan.index-attr))
+                    (not (query-page-prefix-matches?
+                           datom.v (slice plan.prefix 0))))
+            (break))
+          (if (< (count rows) plan.limit)
+            (query-page-append-candidate! (addr rows) datom.e datom.v)
+            (do
+              (set! has-more true)
+              (set! stats.lookahead-rows 1)
+              (break)))))
+      (set! stats.index-entries-visited cursor.entries-visited)
+      (set! stats.rows-emitted (count rows))
+      (query-page-finish rows has-more stats))))
+
+(defn query-page-overlay-note-datom!
+  [out: ^[dynamic]Datom, source: DB-Read-Source, index-attr: string,
+   datom: Datom]
+  (when (and (= datom.a index-attr)
+             (db-read-source-filter-allows-tx? source datom.tx))
+    ;; The overlay is a small transaction/log-tail run. Retain exactly its
+    ;; newest operation for each EAV identity, including tombstones which
+    ;; shadow a live fact in the persisted current root.
+    (remove-datom-fact! out datom.e datom.a datom.v)
+    (arr.push! out^ (datom-owned datom))))
+
+(defn query-page-overlay-current-datoms
+  [source: DB-Read-Source, index-attr: string]
+  -> [datoms: [dynamic]Datom, entries-visited: int, ok: bool, error: string]
+  (let [out (make [dynamic]Datom)
+        visited 0]
+    (case source.kind
+      .SQLite-Tx-Ops-Overlay
+        (when (db-read-source-filter-allows-tx? source source.overlay-tx)
+          (for [op source.overlay-ops^]
+            (inc! visited)
+            (let [datom (Datom :e op.e
+                                :a op.a
+                                :v op.v
+                                :tx source.overlay-tx
+                                :added (= op.kind .Add))]
+              (query-page-overlay-note-datom!
+                (addr out) source index-attr datom))))
+      .SQLite-Datom-Overlay
+        (for [datom source.overlay-datoms^]
+          (inc! visited)
+          (query-page-overlay-note-datom!
+            (addr out) source index-attr datom))
+      .SQLite-Datom-Log-Overlay
+        (for [index (arr.range 0 source.overlay-log^.count)]
+          (inc! visited)
+          (let [[datom datom-ok]
+                  (shared-datom-log-at source.overlay-log^ index)]
+            (when (not datom-ok)
+              (delete-owned-datoms out)
+              (return (make [dynamic]Datom) visited false
+                      "q-page SQLite overlay log was missing a datom"))
+            (query-page-overlay-note-datom!
+              (addr out) source index-attr datom)
+            (delete-owned-datom datom)))
+      .Shared-Tx-Ops-Overlay
+        (when (db-read-source-filter-allows-tx? source source.overlay-tx)
+          (for [op source.overlay-ops^]
+            (inc! visited)
+            (let [datom (Datom :e op.e
+                                :a op.a
+                                :v op.v
+                                :tx source.overlay-tx
+                                :added (= op.kind .Add))]
+              (query-page-overlay-note-datom!
+                (addr out) source index-attr datom))))
+      .Shared-Datom-Overlay
+        (for [datom source.overlay-datoms^]
+          (inc! visited)
+          (query-page-overlay-note-datom!
+            (addr out) source index-attr datom))
+      .Shared-Datom-Log-Overlay
+        (for [index (arr.range 0 source.overlay-log^.count)]
+          (inc! visited)
+          (let [[datom datom-ok]
+                  (shared-datom-log-at source.overlay-log^ index)]
+            (when (not datom-ok)
+              (delete-owned-datoms out)
+              (return (make [dynamic]Datom) visited false
+                      "q-page shared overlay log was missing a datom"))
+            (query-page-overlay-note-datom!
+              (addr out) source index-attr datom)
+            (delete-owned-datom datom)))
+       (do))
+    (return out visited true "")))
+
+(defn query-page-overlay-shadows?
+  [overlay: []Datom, datom: Datom] -> bool
+  (for [candidate overlay]
+    (when (datom-same-fact? candidate datom.e datom.a datom.v)
+      (return true)))
+  false)
+
+(defn query-page-datom-after-start?
+  [datom: Datom, plan: Query-Page-Plan] -> bool
+  (and (= datom.a plan.index-attr)
+       (query-page-prefix-matches? datom.v (slice plan.prefix 0))
+       (or (not plan.has-after)
+           (> (value-compare datom.v plan.after) 0))))
+
+(defn query-page-sqlite-base-basis
+  [source: DB-Read-Source] -> u64
+  (when (and source.filter-has-as-of
+             (or (not (query-page-sqlite-overlay? source))
+                 (<= source.filter-as-of-tx
+                     source.sqlite-snapshot^.basis-tx)))
+    (return source.filter-as-of-tx))
+  source.sqlite-snapshot^.basis-tx)
+
+(defn query-page-sqlite-overlay-execute-plan
+  [source: DB-Read-Source, plan: Query-Page-Plan] -> Query-Page
+  (let [[overlay overlay-visited overlay-ok overlay-error]
+          (query-page-overlay-current-datoms source plan.index-attr)]
+    (when (not overlay-ok)
+      (return (query-page-error .StorageError overlay-error)))
+    (defer (delete-owned-datoms overlay))
+    (let [start-key (query-page-start-key plan)
+          start-values ([]Value [(value-keyword plan.index-attr) start-key])
+          basis (query-page-sqlite-base-basis source)
+          [cursor cursor-error-code cursor-ok cursor-error]
+            (sqlite-open-current-ordered-cursor-handle-at-basis-typed
+              source.sqlite-snapshot^.indexes.handle basis start-values
+              plan.has-after source.sqlite-snapshot^.indexes.page-size)]
+      (when (not plan.has-after)
+        (defer (delete start-key.items)))
+      (when (not cursor-ok)
+        (return (query-page-error
+                  (query-page-error-code-from-sqlite-cursor cursor-error-code)
+                  cursor-error)))
+      (defer (close-sqlite-current-ordered-cursor cursor))
+      (let [candidates (make [dynamic]Datom)
+            stats (query-page-empty-stats)]
+        (defer (delete-owned-datoms candidates))
+        ;; Only the first limit+1 unshadowed base candidates can affect the
+        ;; merged page. Overlay work is bounded by the durable novelty tail,
+        ;; never by the historical/current database cardinality.
+        (while (< (count candidates) (+ plan.limit 1))
+          (let [[datom found next-ok next-error]
+                  (sqlite-current-ordered-cursor-next! (addr cursor))]
+            (when (not next-ok)
+              (return (query-page-error .StorageError next-error)))
+            (when (not found)
+              (break))
+            (if (or (not (= datom.a plan.index-attr))
+                    (not (query-page-prefix-matches?
+                           datom.v (slice plan.prefix 0))))
+              (do
+                (delete-owned-datom datom)
+                (break))
+              (if (query-page-overlay-shadows? (slice overlay 0) datom)
+                (delete-owned-datom datom)
+                (arr.push! candidates datom)))))
+        (for [datom overlay]
+          (when (and datom.added
+                     (query-page-datom-after-start? datom plan))
+            (arr.push! candidates (datom-owned datom))))
+        (let [order (sorted-datom-order-indexes (slice candidates 0) .AVET)
+              rows (make [dynamic]Result-Row 0 plan.limit)
+              available (count order)
+              emit-count (min plan.limit available)
+              has-more (> available plan.limit)]
+          (for [position (arr.range 0 emit-count)]
+            (let [datom candidates[order[position]]]
+              (query-page-append-candidate!
+                (addr rows) datom.e datom.v)))
+          (set! stats.index-seeks (max 1 cursor.runs-opened))
+          (set! stats.index-entries-visited
+                (+ cursor.entries-visited overlay-visited))
+          (set! stats.rows-emitted (count rows))
+          (set! stats.lookahead-rows (if has-more 1 0))
+          (set! stats.storage-pages-loaded
+                (sqlite-index-page-cache-miss-count cursor.index.page-cache))
+          (set! stats.storage-runs-opened cursor.runs-opened)
+          (let [page (query-page-finish rows has-more stats)]
+            (delete order)
+            (return page)))))))
+
+(defn query-page-shared-overlay-execute-plan
+  [source: DB-Read-Source, plan: Query-Page-Plan] -> Query-Page
+  (let [[overlay overlay-visited overlay-ok overlay-error]
+          (query-page-overlay-current-datoms source plan.index-attr)]
+    (when (not overlay-ok)
+      (return (query-page-error .StorageError overlay-error)))
+    (defer (delete-owned-datoms overlay))
+    (let [start-key (query-page-start-key plan)
+          start-values ([]Value [(value-keyword plan.index-attr) start-key])
+          [cursor cursor-ok cursor-error]
+            (shared-current-ordered-cursor
+              source.shared-datoms source.shared-indexes start-values
+              plan.has-after)]
+      (when (not plan.has-after)
+        (defer (delete start-key.items)))
+      (when (not cursor-ok)
+        (return (query-page-error .StorageError cursor-error)))
+      (let [candidates (make [dynamic]Datom)
+            stats (query-page-empty-stats)]
+        (defer (delete-owned-datoms candidates))
+        (while (< (count candidates) (+ plan.limit 1))
+          (let [[datom found next-ok next-error]
+                  (shared-current-ordered-cursor-next! (addr cursor))]
+            (when (not next-ok)
+              (return (query-page-error .StorageError next-error)))
+            (when (not found)
+              (break))
+            (if (or (not (= datom.a plan.index-attr))
+                    (not (query-page-prefix-matches?
+                           datom.v (slice plan.prefix 0))))
+              (break)
+              (when (not (query-page-overlay-shadows?
+                           (slice overlay 0) datom))
+                (arr.push! candidates (datom-owned datom))))))
+        (for [datom overlay]
+          (when (and datom.added
+                     (query-page-datom-after-start? datom plan))
+            (arr.push! candidates (datom-owned datom))))
+        (let [order (sorted-datom-order-indexes (slice candidates 0) .AVET)
+              rows (make [dynamic]Result-Row 0 plan.limit)
+              available (count order)
+              emit-count (min plan.limit available)
+              has-more (> available plan.limit)]
+          (for [position (arr.range 0 emit-count)]
+            (let [datom candidates[order[position]]]
+              (query-page-append-candidate!
+                (addr rows) datom.e datom.v)))
+          (set! stats.index-seeks 1)
+          (set! stats.index-entries-visited
+                (+ cursor.entries-visited overlay-visited))
+          (set! stats.rows-emitted (count rows))
+          (set! stats.lookahead-rows (if has-more 1 0))
+          (let [page (query-page-finish rows has-more stats)]
+            (delete order)
+            (return page)))))))
+
+(defn query-page-sqlite-execute-plan
+  [source: DB-Read-Source, plan: Query-Page-Plan] -> Query-Page
+  (when (query-page-sqlite-overlay? source)
+    (return (query-page-sqlite-overlay-execute-plan source plan)))
+  (let [start-key (query-page-start-key plan)
+        start-values ([]Value [(value-keyword plan.index-attr) start-key])
+        basis (query-page-sqlite-base-basis source)
+        [cursor cursor-error-code cursor-ok cursor-error]
+          (sqlite-open-current-ordered-cursor-handle-at-basis-typed
+            source.sqlite-snapshot^.indexes.handle basis start-values
+            plan.has-after source.sqlite-snapshot^.indexes.page-size)]
+    (when (not plan.has-after)
+      (defer (delete start-key.items)))
+    (when (not cursor-ok)
+      (return (query-page-error
+                (query-page-error-code-from-sqlite-cursor cursor-error-code)
+                cursor-error)))
+    (defer (close-sqlite-current-ordered-cursor cursor))
+    (let [rows (make [dynamic]Result-Row 0 plan.limit)
+          stats (query-page-empty-stats)
+          has-more false]
+      (set! stats.index-seeks (max 1 cursor.runs-opened))
+      (set! stats.storage-runs-opened cursor.runs-opened)
+      (while true
+        (let [[datom found next-ok next-error]
+                (sqlite-current-ordered-cursor-next! (addr cursor))]
+          (when (not next-ok)
+            (delete-result-rows-owned-values rows)
+            (return (query-page-error .StorageError next-error)))
+          (when (not found)
+            (break))
+          (defer (delete-owned-datom datom))
+          (when (or (not (= datom.a plan.index-attr))
+                    (not (query-page-prefix-matches?
+                           datom.v (slice plan.prefix 0))))
+            (break))
+          (if (< (count rows) plan.limit)
+            (query-page-append-candidate! (addr rows) datom.e datom.v)
+            (do
+              (set! has-more true)
+              (set! stats.lookahead-rows 1)
+              (break)))))
+      (set! stats.index-entries-visited cursor.entries-visited)
+      (set! stats.storage-pages-loaded
+            (sqlite-index-page-cache-miss-count cursor.index.page-cache))
+      (set! stats.rows-emitted (count rows))
+      (query-page-finish rows has-more stats))))
+
+(defn q-page-query-source
+  [source: DB-Read-Source, query: Query, request: Query-Page-Request]
+  -> Query-Page
+  (let [plan (query-page-plan-source source query request)]
+    (defer (delete-query-page-plan plan))
+    (when (not plan.ok)
+      (return (query-page-error plan.error-code plan.error)))
+    (let [page
+            (if (= source.kind .Resident)
+              (query-page-resident-execute-plan source.db plan)
+              (if (= source.kind .Shared-Resident-Datoms-And-Indexes)
+                (query-page-shared-execute-plan source plan)
+                (if (query-page-shared-overlay? source)
+                  (query-page-shared-overlay-execute-plan source plan)
+                  (query-page-sqlite-execute-plan source plan))))]
+      (set! page.stats.schema-index-entries-visited
+        plan.schema-index-entries-visited)
+      page)))
+
+(defn q-page-query-resident
+  [db: ^DB, query: Query, request: Query-Page-Request] -> Query-Page
+  (q-page-query-source (resident-db-read-source db) query request))
+
+(defn query-page-value-from-edn-text [text: string]
+  -> [value: Value, ok: bool, error: string]
+  (let [[data read-error read-ok] (edn.try-read text)]
+    (when (not read-ok)
+      (return (Value) false read-error.message))
+    (let [doc (edn-doc-from-data data)]
+      (defer (delete doc.nodes))
+      (let [[parsed parsed-ok parsed-error]
+              (edn-value-from-node doc doc.root)]
+        (when (not parsed-ok)
+          (return (Value) false parsed-error))
+        (let [owned (value-owned parsed)]
+          (delete-value-containers-shallow parsed)
+          (return owned true ""))))))
+
+(defn query-page-stats-owned-value [stats: Query-Page-Stats] -> Value
+  (value-map
+    ([]Value
+      [(value-keyword (string-owned ":index-seeks"))
+       (value-int (i64 stats.index-seeks))
+       (value-keyword (string-owned ":schema-index-entries-visited"))
+       (value-int (i64 stats.schema-index-entries-visited))
+       (value-keyword (string-owned ":index-entries-visited"))
+       (value-int (i64 stats.index-entries-visited))
+       (value-keyword (string-owned ":rows-emitted"))
+       (value-int (i64 stats.rows-emitted))
+       (value-keyword (string-owned ":lookahead-rows"))
+       (value-int (i64 stats.lookahead-rows))
+       (value-keyword (string-owned ":storage-pages-loaded"))
+       (value-int (i64 stats.storage-pages-loaded))
+       (value-keyword (string-owned ":storage-runs-opened"))
+       (value-int (i64 stats.storage-runs-opened))
+       (value-keyword (string-owned ":generic-materialization-steps"))
+       (value-int (i64 stats.generic-materialization-steps))])))
+
+(defn query-page-error-code-keyword [code: Query-Page-Error-Code] -> string
+  (case code
+    .None ":none"
+    .StaleBasis ":stale-basis"
+    .InvalidRequest ":invalid-request"
+    .Unsupported ":unsupported"
+    .StorageError ":storage-error"
+    .InternalError ":internal-error"
+    ":internal-error"))
+
+(defn query-page-owned-value [page: Query-Page] -> Value
+  (let [rows (make [dynamic]Value 0 (count page.result.rows))]
+    (for [row page.result.rows]
+      (let [values (make [dynamic]Value 0 (count row.values))]
+        (for [value row.values]
+          (arr.push! values (value-owned value)))
+        (arr.push! rows (value-vector-owned values))))
+    (value-map
+      ([]Value
+        [(value-keyword (string-owned ":ok")) (value-bool page.result.ok)
+         (value-keyword (string-owned ":error-code"))
+         (value-keyword
+           (string-owned (query-page-error-code-keyword page.error-code)))
+         (value-keyword (string-owned ":error"))
+         (value-string (string-owned page.result.error))
+         (value-keyword (string-owned ":rows")) (value-vector-owned rows)
+         (value-keyword (string-owned ":next-key"))
+         (if page.has-next-key (value-owned page.next-key) (value-nil))
+         (value-keyword (string-owned ":has-more"))
+         (value-bool page.has-next-key)
+         (value-keyword (string-owned ":stats"))
+         (query-page-stats-owned-value page.stats)]))))

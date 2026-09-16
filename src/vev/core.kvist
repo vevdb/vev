@@ -79,7 +79,13 @@
 
 (defstruct DB [
   datoms: [dynamic]Datom
+  ;; Immutable scalar derived when this value is built or appended. Consumers
+  ;; must not rescan historical datoms merely to recover the value's basis.
+  basis-tx: u64
   current: [dynamic]int
+  ;; Derived from `current`; never authoritative. Kept in AVET order so
+  ;; bounded consumers do not have to scan the historical AVET index.
+  current-avet: [dynamic]int
   eavt: [dynamic]int
   eavt-entities: [dynamic]u64
   eavt-entity-starts: [dynamic]int
@@ -90,7 +96,29 @@
   schema-cardinality-many: (map string (struct []))
   schema-unique: (map string (struct []))
   schema-ref: (map string (struct []))
+  ;; Current composite tuple width by attribute ident. Query-page planning
+  ;; must never recover this by walking historical schema datoms.
+  schema-tuple-widths: map[string]int
 ])
+
+(defn datom-slice-basis-tx [datoms: []Datom] -> u64
+  (let [basis: u64 0]
+    (for [datom datoms]
+      (when (> datom.tx basis)
+        (set! basis datom.tx)))
+    basis))
+
+(defn db-basis-tx-after-appended-datoms
+  [before: DB, datoms: []Datom, start-index: int] -> u64
+  (let [basis before.basis-tx
+        index start-index]
+    ;; Publication pays only for the appended transaction suffix, never for
+    ;; the immutable history already summarized by `before.basis-tx`.
+    (while (< index (count datoms))
+      (when (> datoms[index].tx basis)
+        (set! basis datoms[index].tx))
+      (inc! index))
+    basis))
 
 (defstruct Serializable-DB [
   datoms: [dynamic]Datom
@@ -1748,6 +1776,12 @@
     (sort-datom-indexes! (addr indexes) datoms order)
     indexes))
 
+(defn build-current-ordered-index
+  [datoms: []Datom, current: []int, order: string] -> [dynamic]int
+  (let [indexes (arr.into [dynamic]int current)]
+    (sort-datom-indexes! (addr indexes) datoms order)
+    indexes))
+
 (defn sorted-new-datom-indexes [datoms: []Datom, start-index: int, order: string] -> [dynamic]int
   (let [indexes (make [dynamic]int 0 (- (count datoms) start-index))]
     (let [index start-index]
@@ -1965,11 +1999,12 @@
     (arr.sort! current)
     current))
 
-(defn build-schema-caches [datoms: []Datom, current: []int] -> [value-types: map[string]string, cardinality-many: (map string (struct [])), unique: (map string (struct [])), refs: (map string (struct []))]
+(defn build-schema-caches [datoms: []Datom, current: []int] -> [value-types: map[string]string, cardinality-many: (map string (struct [])), unique: (map string (struct [])), refs: (map string (struct [])), tuple-widths: map[string]int]
   (let [out-value-types (mmap.empty string string)
         out-cardinality-many (set.empty string)
         out-unique (set.empty string)
-        out-ref (set.empty string)]
+        out-ref (set.empty string)
+        out-tuple-widths (mmap.empty string int)]
     (for [ident-index current]
       (let [ident-datom datoms[ident-index]]
         (when (and (= ident-datom.a ":db/ident")
@@ -1993,8 +2028,13 @@
                          (= prop.v.kind .Keyword)
                          (or (= prop.v.text ":db.unique/identity")
                              (= prop.v.text ":db.unique/value")))
-                      (set.add! out-unique attr)))))))))
-    (return out-value-types out-cardinality-many out-unique out-ref)))
+                      (set.add! out-unique attr)
+                    (and (= prop.a ":db/tupleAttrs")
+                         (= prop.v.kind .Vector))
+                      (mmap.assoc! out-tuple-widths attr
+                        (count prop.v.items))))))))))
+    (return out-value-types out-cardinality-many out-unique out-ref
+            out-tuple-widths)))
 
 (defn int-lower-bound [xs: []int, value: int] -> int
   (let [low 0
@@ -2014,9 +2054,12 @@
         vaet (build-index slice-datoms "vaet")
         [eavt-entities eavt-entity-starts] (build-eavt-entities slice-datoms (slice eavt 0))
         current (build-current-index slice-datoms)
-        [schema-value-types schema-cardinality-many schema-unique schema-ref] (build-schema-caches slice-datoms (slice current 0))]
+        current-avet (build-current-ordered-index slice-datoms (slice current 0) "avet")
+        [schema-value-types schema-cardinality-many schema-unique schema-ref schema-tuple-widths] (build-schema-caches slice-datoms (slice current 0))]
     (DB :datoms datoms
+         :basis-tx (datom-slice-basis-tx slice-datoms)
          :current current
+         :current-avet current-avet
          :eavt eavt
          :eavt-entities eavt-entities
          :eavt-entity-starts eavt-entity-starts
@@ -2026,7 +2069,8 @@
          :schema-value-types schema-value-types
          :schema-cardinality-many schema-cardinality-many
          :schema-unique schema-unique
-         :schema-ref schema-ref)))
+         :schema-ref schema-ref
+         :schema-tuple-widths schema-tuple-widths)))
 
 (def small-incremental-db-after-max-datoms 64)
 
@@ -2081,8 +2125,12 @@
         [eavt-entities eavt-entity-starts]
           (build-eavt-entities slice-datoms (slice eavt 0))
         current (build-current-index-with-appended-datoms before slice-datoms start-index)]
+    (let [current-avet
+            (build-current-ordered-index slice-datoms (slice current 0) "avet")]
     (DB :datoms datoms
+         :basis-tx (db-basis-tx-after-appended-datoms before slice-datoms start-index)
          :current current
+         :current-avet current-avet
          :eavt eavt
          :eavt-entities eavt-entities
          :eavt-entity-starts eavt-entity-starts
@@ -2092,7 +2140,8 @@
          :schema-value-types (clone-schema-value-types before.schema-value-types)
          :schema-cardinality-many (clone-schema-cardinality-many before.schema-cardinality-many)
          :schema-unique (clone-schema-unique before.schema-unique)
-         :schema-ref (clone-schema-ref before.schema-ref))))
+         :schema-ref (clone-schema-ref before.schema-ref)
+         :schema-tuple-widths (clone-schema-tuple-widths before.schema-tuple-widths)))))
 
 (defn clone-schema-value-types [schema: map[string]string] -> map[string]string
   (mmap.merge schema (mmap.empty string string)))
@@ -2106,9 +2155,13 @@
 (defn clone-schema-ref [schema: (map string (struct []))] -> (map string (struct []))
   (set.union schema (set.empty string)))
 
+(defn clone-schema-tuple-widths [schema: map[string]int] -> map[string]int
+  (mmap.merge schema (mmap.empty string int)))
+
 (defn clone-db [db: DB] -> DB
   (let [datoms (arr.into [dynamic]Datom (slice db.datoms 0))
         current (arr.into [dynamic]int (slice db.current 0))
+        current-avet (arr.into [dynamic]int (slice db.current-avet 0))
         eavt (arr.into [dynamic]int (slice db.eavt 0))
         eavt-entities (arr.into [dynamic]u64 (slice db.eavt-entities 0))
         eavt-entity-starts (arr.into [dynamic]int (slice db.eavt-entity-starts 0))
@@ -2118,9 +2171,12 @@
         schema-value-types (clone-schema-value-types db.schema-value-types)
         schema-cardinality-many (clone-schema-cardinality-many db.schema-cardinality-many)
         schema-unique (clone-schema-unique db.schema-unique)
-        schema-ref (clone-schema-ref db.schema-ref)]
+        schema-ref (clone-schema-ref db.schema-ref)
+        schema-tuple-widths (clone-schema-tuple-widths db.schema-tuple-widths)]
     (DB :datoms datoms
+         :basis-tx db.basis-tx
          :current current
+         :current-avet current-avet
          :eavt eavt
          :eavt-entities eavt-entities
          :eavt-entity-starts eavt-entity-starts
@@ -2130,7 +2186,8 @@
          :schema-value-types schema-value-types
          :schema-cardinality-many schema-cardinality-many
          :schema-unique schema-unique
-         :schema-ref schema-ref)))
+         :schema-ref schema-ref
+         :schema-tuple-widths schema-tuple-widths)))
 
 (defn build-current-index-appended-range [current: []int, start-index: int, end-index: int] -> [dynamic]int
   (let [out (arr.into [dynamic]int current)
@@ -2154,12 +2211,18 @@
         vaet (append-index-with-added slice-datoms (slice db.vaet 0) (slice plan.vaet 0) "vaet")
         [eavt-entities eavt-entity-starts] (build-eavt-entities slice-datoms (slice eavt 0))
         current (build-current-index-appended-range (slice db.current 0) plan.start-index (+ plan.start-index plan.appended-count))
+        current-avet (build-current-ordered-index slice-datoms (slice current 0) "avet")
         schema-value-types (clone-schema-value-types db.schema-value-types)
         schema-cardinality-many (clone-schema-cardinality-many db.schema-cardinality-many)
         schema-unique (clone-schema-unique db.schema-unique)
-        schema-ref (clone-schema-ref db.schema-ref)]
+        schema-ref (clone-schema-ref db.schema-ref)
+        schema-tuple-widths (clone-schema-tuple-widths db.schema-tuple-widths)]
     (DB :datoms datoms
+         :basis-tx
+           (db-basis-tx-after-appended-datoms
+             db slice-datoms plan.start-index)
          :current current
+         :current-avet current-avet
          :eavt eavt
          :eavt-entities eavt-entities
          :eavt-entity-starts eavt-entity-starts
@@ -2169,7 +2232,8 @@
          :schema-value-types schema-value-types
          :schema-cardinality-many schema-cardinality-many
          :schema-unique schema-unique
-         :schema-ref schema-ref)))
+         :schema-ref schema-ref
+         :schema-tuple-widths schema-tuple-widths)))
 
 (defn build-db-append-only-new-entities [db: DB, datoms: [dynamic]Datom, start-index: int] -> DB
   (let [plan (tx-publish-plan-for-append (slice datoms start-index) start-index true)]
@@ -2188,12 +2252,18 @@
                                                                               (slice db.eavt-entity-starts 0)
                                                                               (count db.eavt))
         current (build-current-index-appended-range (slice db.current 0) plan.start-index (+ plan.start-index plan.appended-count))
+        current-avet (build-current-ordered-index slice-datoms (slice current 0) "avet")
         schema-value-types (clone-schema-value-types db.schema-value-types)
         schema-cardinality-many (clone-schema-cardinality-many db.schema-cardinality-many)
         schema-unique (clone-schema-unique db.schema-unique)
-        schema-ref (clone-schema-ref db.schema-ref)]
+        schema-ref (clone-schema-ref db.schema-ref)
+        schema-tuple-widths (clone-schema-tuple-widths db.schema-tuple-widths)]
     (DB :datoms datoms
+         :basis-tx
+           (db-basis-tx-after-appended-datoms
+             db slice-datoms plan.start-index)
          :current current
+         :current-avet current-avet
          :eavt eavt
          :eavt-entities eavt-entities
          :eavt-entity-starts eavt-entity-starts
@@ -2203,7 +2273,8 @@
          :schema-value-types schema-value-types
          :schema-cardinality-many schema-cardinality-many
          :schema-unique schema-unique
-         :schema-ref schema-ref)))
+         :schema-ref schema-ref
+         :schema-tuple-widths schema-tuple-widths)))
 
 (defn build-db-append-only-with-publish-plan [db: DB, datoms: [dynamic]Datom, plan: Tx-Publish-Plan] -> DB
   (if plan.new-entities-after-existing

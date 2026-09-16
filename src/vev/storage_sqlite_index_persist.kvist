@@ -17,6 +17,10 @@
 (def sqlite-index-automatic-checkpoint-root-threshold 128)
 (def sqlite-index-novelty-transaction-threshold 128)
 (def sqlite-index-novelty-datom-threshold 4096)
+;; Crash/reopen and read-only paths must never need to materialize an
+;; arbitrarily large unindexed log suffix. Log-only writers enforce this before
+;; insertion; indexed writers may commit transactions of any size atomically.
+(def sqlite-index-novelty-datom-hard-limit 4096)
 
 (defn index-int-slice-text [items: []int] -> string
   (let [builder (kstr.builder)]
@@ -571,6 +575,76 @@
 (defn persist-bounded-index-chunks-sqlite-handle [handle: rawptr, basis-tx: u64, index-name: string, items: []int] -> [chunk-id: u64, ok: bool, error: string]
   (persist-bounded-index-chunks-sqlite-handle-with-stmts handle nil basis-tx index-name items))
 
+(defn persist-current-avet-root-page-with-stmts!
+  [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts, basis-tx: u64,
+   root-row-id: u64, entries: []int]
+  -> [ok: bool, error: string]
+  ;; `:current-avet` is a derived snapshot index. Its entries still point into
+  ;; the canonical datom log, but the root contains only facts current at this
+  ;; exact basis. Keeping it in the generic root-page registry lets old roots
+  ;; remain readable without adding another authority-bearing store.
+  (let [[current-root current-ok current-error]
+          (persist-bounded-index-chunks-sqlite-handle-with-stmts
+            handle stmts basis-tx ":current-avet" entries)]
+    (when (not current-ok)
+      (return false current-error))
+    (sqlite-insert-index-root-page-with-stmts!
+      handle stmts root-row-id ":current-avet"
+      (sqlite-index-root-page current-root 0) 4)))
+
+(defn persist-current-avet-root-page-at-basis-with-stmts!
+  [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts, basis-tx: u64,
+   entries: []int]
+  -> [ok: bool, error: string]
+  (let [[root-row-id root-ok root-error]
+          (sqlite-index-root-row-id-at-basis handle basis-tx)]
+    (when (not root-ok)
+      (return false root-error))
+    (persist-current-avet-root-page-with-stmts!
+      handle stmts basis-tx root-row-id entries)))
+
+(defn persist-current-avet-delta-root-page-with-stmts!
+  [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts,
+   previous-basis: u64, basis-tx: u64, root-row-id: u64,
+   added: []int, appended: []Datom, start-index: int]
+  -> [ok: bool, error: string]
+  (when (= (count added) 0)
+    (return false "current AVET delta publication requires appended datoms"))
+  (let [[old-rows old-root old-manifest old-runs old-first-key
+         _old-level _old-children old-ok old-error]
+          (vev.sqlite-index-root-chunk-info-at-basis-raw
+            handle ":current-avet" previous-basis)]
+    (discard _old-level)
+    (discard _old-children)
+    (delete old-first-key)
+    (if old-ok
+      (let [[next-root next-manifest next-ok next-error]
+              (persist-run-manifest-index-root-sqlite-handle-known-base-and-appended-with-stmts
+                handle stmts basis-tx ":current-avet"
+                old-root (int old-rows) old-manifest old-runs
+                added appended start-index true)]
+        (when (not next-ok)
+          (return false next-error))
+        (sqlite-insert-index-root-page-with-stmts!
+          handle stmts root-row-id ":current-avet"
+          (sqlite-index-root-page next-root next-manifest) 4))
+      (let [[_previous-root previous-root-ok _previous-root-error]
+              (sqlite-index-root-row-id-at-basis handle previous-basis)]
+        (discard _previous-root)
+        (when previous-root-ok
+          (return false
+            "sqlite DB basis has no persisted current AVET root"))
+        ;; The first durable basis has no predecessor. Its transaction delta
+        ;; is therefore already the complete current-index lineage.
+        (let [[first-root first-ok first-error]
+                (persist-small-delta-index-root-sqlite-handle-with-stmts
+                  handle stmts basis-tx ":current-avet" added)]
+          (when (not first-ok)
+            (return false first-error))
+          (sqlite-insert-index-root-page-with-stmts!
+            handle stmts root-row-id ":current-avet"
+            (sqlite-index-root-page first-root 0) 4))))))
+
 (defn persist-index-root-sqlite-handle-with-stmts [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts, db: DB] -> [ok: bool, error: string]
   (let [basis-tx (db-basis-tx db)
         [eavt-id eavt-ok eavt-error] (persist-bounded-index-chunks-sqlite-handle-with-stmts handle stmts basis-tx ":eavt" (slice db.eavt 0))]
@@ -588,13 +662,23 @@
           (let [roots (sqlite-index-root-set (sqlite-index-root-page eavt-id 0)
                                              (sqlite-index-root-page aevt-id 0)
                                              (sqlite-index-root-page avet-id 0)
-                                             (sqlite-index-root-page vaet-id 0))]
-            (sqlite-insert-index-root-set-and-enqueue-maintenance-with-stmts! handle stmts basis-tx roots)))))))
+                                             (sqlite-index-root-page vaet-id 0))
+                [root-ok root-error]
+                  (sqlite-insert-index-root-set-and-enqueue-maintenance-with-stmts!
+                    handle stmts basis-tx roots)]
+            (when (not root-ok)
+              (return false root-error))
+            (persist-current-avet-root-page-at-basis-with-stmts!
+              handle stmts basis-tx (slice db.current-avet 0))))))))
 
 (defn persist-index-root-sqlite-handle [handle: rawptr, db: DB] -> [ok: bool, error: string]
   (persist-index-root-sqlite-handle-with-stmts handle nil db))
 
-(defn persist-index-root-sqlite-handle-from-indexes-with-stmts [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts, basis-tx: u64, eavt: []int, aevt: []int, avet: []int, vaet: []int] -> [ok: bool, error: string]
+(defn persist-index-root-sqlite-handle-from-indexes-with-stmts
+  [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts, basis-tx: u64,
+   eavt: []int, aevt: []int, avet: []int, vaet: []int,
+   current-avet: []int]
+  -> [ok: bool, error: string]
   (let [[eavt-id eavt-ok eavt-error] (persist-bounded-index-chunks-sqlite-handle-with-stmts handle stmts basis-tx ":eavt" eavt)]
     (when (not eavt-ok)
       (return false eavt-error))
@@ -610,11 +694,21 @@
           (let [roots (sqlite-index-root-set (sqlite-index-root-page eavt-id 0)
                                              (sqlite-index-root-page aevt-id 0)
                                              (sqlite-index-root-page avet-id 0)
-                                             (sqlite-index-root-page vaet-id 0))]
-            (sqlite-insert-index-root-set-and-enqueue-maintenance-with-stmts! handle stmts basis-tx roots)))))))
+                                             (sqlite-index-root-page vaet-id 0))
+                [root-ok root-error]
+                  (sqlite-insert-index-root-set-and-enqueue-maintenance-with-stmts!
+                    handle stmts basis-tx roots)]
+            (when (not root-ok)
+              (return false root-error))
+            (persist-current-avet-root-page-at-basis-with-stmts!
+              handle stmts basis-tx current-avet)))))))
 
-(defn persist-index-root-sqlite-handle-from-indexes [handle: rawptr, basis-tx: u64, eavt: []int, aevt: []int, avet: []int, vaet: []int] -> [ok: bool, error: string]
-  (persist-index-root-sqlite-handle-from-indexes-with-stmts handle nil basis-tx eavt aevt avet vaet))
+(defn persist-index-root-sqlite-handle-from-indexes
+  [handle: rawptr, basis-tx: u64, eavt: []int, aevt: []int, avet: []int,
+   vaet: []int, current-avet: []int]
+  -> [ok: bool, error: string]
+  (persist-index-root-sqlite-handle-from-indexes-with-stmts
+    handle nil basis-tx eavt aevt avet vaet current-avet))
 
 (defn persist-appended-index-root-sqlite-handle-with-stmts [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts, basis-tx: u64, index-name: string, appended: []int] -> [chunk-id: u64, ok: bool, error: string]
   (let [[_ old-count old-root old-ok old-error] (vev.sqlite-latest-index-root-chunk-info-raw handle index-name)]
@@ -1230,7 +1324,8 @@
     "eavt"
     (if (= index-name ":aevt")
       "aevt"
-      (if (= index-name ":avet")
+      (if (or (= index-name ":avet")
+              (= index-name ":current-avet"))
         "avet"
         "vaet"))))
 
@@ -1639,28 +1734,13 @@
     added appended start-index has-appended?))
 
 (defn sqlite-republish-latest-index-root-with [handle: rawptr, basis-tx: u64, index-name: string, new-root: u64] -> [ok: bool, error: string]
-  (let [[_ eavt-count eavt-root eavt-ok eavt-error] (vev.sqlite-latest-index-root-chunk-info-raw handle ":eavt")]
-    (discard eavt-count)
-    (when (not eavt-ok)
-      (return false eavt-error))
-    (let [[_ aevt-count aevt-root aevt-ok aevt-error] (vev.sqlite-latest-index-root-chunk-info-raw handle ":aevt")]
-      (discard aevt-count)
-      (when (not aevt-ok)
-        (return false aevt-error))
-      (let [[_ avet-count avet-root avet-ok avet-error] (vev.sqlite-latest-index-root-chunk-info-raw handle ":avet")]
-        (discard avet-count)
-        (when (not avet-ok)
-          (return false avet-error))
-        (let [[_ vaet-count vaet-root vaet-ok vaet-error] (vev.sqlite-latest-index-root-chunk-info-raw handle ":vaet")]
-          (discard vaet-count)
-          (when (not vaet-ok)
-            (return false vaet-error))
-          (let [next-eavt (if (= index-name ":eavt") new-root eavt-root)
-                next-aevt (if (= index-name ":aevt") new-root aevt-root)
-                next-avet (if (= index-name ":avet") new-root avet-root)
-                next-vaet (if (= index-name ":vaet") new-root vaet-root)
-                [_ root-ok root-error] (vev.sqlite-insert-index-root-raw handle basis-tx next-eavt next-aevt next-avet next-vaet)]
-            (return root-ok root-error)))))))
+  (let [[roots roots-ok roots-error]
+          (sqlite-index-root-set-at-basis handle basis-tx)]
+    (when (not roots-ok)
+      (return false roots-error))
+    (sqlite-insert-index-root-set-and-enqueue-maintenance!
+      handle basis-tx
+      (sqlite-index-root-set-with-index roots index-name new-root 0))))
 
 (defn sqlite-latest-index-root-and-manifest-at-basis [handle: rawptr, basis-tx: u64, index-name: string] -> [root-id: u64, manifest-id: u64, ok: bool, error: string]
   (let [[_rows root manifest _manifest-runs first-key _level _children info-ok info-error] (vev.sqlite-index-root-chunk-info-at-basis-raw handle index-name basis-tx)]
@@ -1705,6 +1785,11 @@
 
 (defn sqlite-index-root-row-id-at-basis [handle: rawptr, basis-tx: u64] -> [root-row-id: u64, ok: bool, error: string]
   (vev.sqlite-index-root-row-id-at-basis-raw handle basis-tx))
+
+(defn sqlite-index-root-row-id-at-basis-status
+  [handle: rawptr, basis-tx: u64]
+  -> [root-row-id: u64, found: bool, ok: bool, error: string]
+  (vev.sqlite-index-root-row-id-at-basis-status-raw handle basis-tx))
 
 (defn sqlite-index-root-set-with-index [roots: SQLite-Index-Root-Set, index-name: string, new-root: u64, new-manifest-id: u64] -> SQLite-Index-Root-Set
   (let [new-page (sqlite-index-root-page new-root new-manifest-id)]
@@ -1977,7 +2062,39 @@
 (defn sqlite-insert-index-root-pages! [handle: rawptr, root-id: u64, roots: SQLite-Index-Root-Set] -> [ok: bool, error: string]
   (sqlite-insert-index-root-pages-with-stmts! handle nil root-id roots))
 
+(defn sqlite-current-avet-root-page-if-basis
+  [handle: rawptr, has-basis: bool, basis-tx: u64]
+  -> [root-id: u64, manifest-id: u64, found: bool, ok: bool, error: string]
+  (when (not has-basis)
+    (return 0 0 false true ""))
+  (vev.sqlite-index-root-page-at-basis-raw
+    handle ":current-avet" basis-tx))
+
 (defn sqlite-insert-index-root-set-with-stmts! [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts, basis-tx: u64, roots: SQLite-Index-Root-Set] -> [root-id: u64, ok: bool, error: string]
+  (let [[previous-basis previous-ok previous-error]
+          (vev.sqlite-latest-index-root-basis-raw handle)
+        has-previous previous-ok
+        [_target-row target-ok target-error]
+          (vev.sqlite-index-root-row-id-at-basis-raw handle basis-tx)
+        has-target target-ok]
+    (when (and (not previous-ok)
+               (not (= previous-error "sqlite DB has no Vev index roots")))
+      (return 0 false previous-error))
+    (when (and (not target-ok)
+               (not (= target-error "sqlite DB has no Vev index root for basis")))
+      (return 0 false target-error))
+    ;; Capture the exact page before publishing the new row. Maintenance may
+    ;; republish at the same basis, in which case a basis lookup after insert
+    ;; would observe the incomplete replacement row instead of its predecessor.
+    ;; A historical insertion must never borrow a page from a newer basis.
+    (let [page-source-basis (if has-target basis-tx previous-basis)
+          has-page-source (or has-target
+                              (and has-previous (> basis-tx previous-basis)))]
+    (let [[current-root current-manifest current-found current-ok current-error]
+            (sqlite-current-avet-root-page-if-basis
+              handle has-page-source page-source-basis)]
+      (when (not current-ok)
+        (return 0 false current-error))
   (let [[published-root-id root-ok root-error] (sqlite-insert-index-root-with-manifests-with-stmts
                                                 handle
                                                 stmts
@@ -1993,7 +2110,16 @@
     (when (not root-ok)
       (return published-root-id false root-error))
     (let [[pages-ok pages-error] (sqlite-insert-index-root-pages-with-stmts! handle stmts published-root-id roots)]
-      (return published-root-id pages-ok pages-error))))
+      (when (not pages-ok)
+        (return published-root-id false pages-error))
+      (when current-found
+        (let [[insert-ok insert-error]
+                (sqlite-insert-index-root-page-with-stmts!
+                  handle stmts published-root-id ":current-avet"
+                  (sqlite-index-root-page current-root current-manifest) 4)]
+          (when (not insert-ok)
+            (return published-root-id false insert-error))))
+      (return published-root-id true "")))))))
 
 (defn sqlite-insert-index-root-set! [handle: rawptr, basis-tx: u64, roots: SQLite-Index-Root-Set] -> [root-id: u64, ok: bool, error: string]
   (sqlite-insert-index-root-set-with-stmts! handle nil basis-tx roots))
@@ -2005,17 +2131,42 @@
     (let [[latest-roots roots-ok roots-error] (sqlite-index-root-set-at-basis handle latest-basis)]
       (when (not roots-ok)
         (return 0 false roots-error))
+      ;; As above, capture before inserting because root-copy is also allowed
+      ;; to republish the same logical basis.
+      (let [[current-root current-manifest current-found current-ok current-error]
+              (vev.sqlite-index-root-page-at-basis-raw
+                handle ":current-avet" latest-basis)]
+        (when (not current-ok)
+          (return 0 false current-error))
       (if (= stmts nil)
         (let [[copied-root-id root-ok root-error] (vev.sqlite-insert-index-root-copy-latest-raw handle basis-tx)]
           (when (not root-ok)
             (return copied-root-id false root-error))
           (let [[pages-ok pages-error] (sqlite-insert-index-root-pages-with-stmts! handle nil copied-root-id latest-roots)]
-            (return copied-root-id pages-ok pages-error)))
+            (when (not pages-ok)
+              (return copied-root-id false pages-error))
+            (when current-found
+              (let [[insert-ok insert-error]
+                      (sqlite-insert-index-root-page-with-stmts!
+                        handle nil copied-root-id ":current-avet"
+                        (sqlite-index-root-page current-root current-manifest) 4)]
+                (when (not insert-ok)
+                  (return copied-root-id false insert-error))))
+            (return copied-root-id true "")))
         (let [[copied-root-id root-ok root-error] (vev.sqlite-step-index-root-copy-latest-stmt-raw handle stmts^.root-copy-stmt basis-tx)]
           (when (not root-ok)
             (return copied-root-id false root-error))
           (let [[pages-ok pages-error] (sqlite-insert-index-root-pages-with-stmts! handle stmts copied-root-id latest-roots)]
-            (return copied-root-id pages-ok pages-error)))))))
+            (when (not pages-ok)
+              (return copied-root-id false pages-error))
+            (when current-found
+              (let [[insert-ok insert-error]
+                      (sqlite-insert-index-root-page-with-stmts!
+                        handle stmts copied-root-id ":current-avet"
+                        (sqlite-index-root-page current-root current-manifest) 4)]
+                (when (not insert-ok)
+                  (return copied-root-id false insert-error))))
+            (return copied-root-id true ""))))))))
 
 (defn sqlite-republish-latest-index-root-set-with-stmts! [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts, basis-tx: u64] -> [root-id: u64, ok: bool, error: string]
   (sqlite-copy-latest-index-root-set-with-stmts! handle stmts basis-tx))

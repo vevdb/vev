@@ -916,16 +916,20 @@
           (vev.delete-store-tx-report report)))
       (let [[root-count root-count-ok root-count-error] (vev.sqlite-index-root-count path)
             [manifest-count manifest-count-ok manifest-count-error] (vev.sqlite-index-run-manifest-count path)
-            [_ _ tail-transactions tail-datoms lag-ok lag-error] (vev.sqlite-index-lag-stats-raw store.sqlite.handle)
+            [head indexed tail-transactions tail-datoms lag-ok lag-error] (vev.sqlite-index-lag-stats-raw store.sqlite.handle)
             first-result (vev.q-result-store-db-text (addr retained-first) "[:find ?value :where [?e :item/value ?value]]")
             latest-result (vev.q-result-store-text (addr store) "[:find ?value :where [?e :item/value ?value]]")]
         (t.is root-count-ok root-count-error)
-        (t.is (= root-count 1))
+        ;; Crossing the automatic checkpoint threshold enters shared-resident
+        ;; mode. Subsequent commits publish atomic delta roots rather than
+        ;; recreating a novelty suffix.
+        (t.is (>= root-count 1))
         (t.is manifest-count-ok manifest-count-error)
-        (t.is (= manifest-count 0))
+        (t.is (>= manifest-count 5))
         (t.is lag-ok lag-error)
-        (t.is (= tail-transactions 1))
-        (t.is (= tail-datoms 2))
+        (t.is (= indexed head))
+        (t.is (= tail-transactions 0))
+        (t.is (= tail-datoms 0))
         (t.is first-result.result.ok first-result.result.error)
         (t.is (= (count first-result.result.rows) 1))
         (t.is latest-result.result.ok latest-result.result.error)
@@ -1748,10 +1752,12 @@
     (t.is (= root-count 2))
     (t.is root-page-count-ok)
     (t.is (= root-page-count-error ""))
-    (t.is (= root-page-count 8))
+    ;; Five derived index pages are published per basis: the four historical
+    ;; public orders plus the bounded current AVET snapshot.
+    (t.is (= root-page-count 10))
     (t.is chunk-count-ok)
     (t.is (= chunk-count-error ""))
-    (t.is (= chunk-count 8))
+    (t.is (= chunk-count 10))
     (t.is basis-ok)
     (t.is (= basis-error ""))
     (t.is (= basis second-report.tx))
@@ -3473,7 +3479,7 @@
         (t.is level-before-ok level-before-error)
         (t.is (= level-before (i64 1)))
         (t.is manifest-before-ok manifest-before-error)
-        (t.is (= manifest-before 0)))
+        (t.is (>= manifest-before 5)))
       (vev.close-store reopened))
     (let [[clear-ok clear-error] (vev.sqlite-clear-latest-index-root-child-count-for-test path ":eavt")
           [fallback-children fallback-children-ok fallback-children-error] (vev.sqlite-latest-index-root-child-count path ":eavt")]
@@ -3496,7 +3502,7 @@
         (t.is level-after-ok level-after-error)
         (t.is (= level-after (i64 1)))
         (t.is manifest-after-ok manifest-after-error)
-        (t.is (= manifest-after 0))
+        (t.is (>= manifest-after 5))
         (t.is result.result.ok result.result.error)
         (t.is (= (count result.result.rows) 131))
         (t.is (result-has-int-int-row? result.result 131 131))
@@ -3532,7 +3538,10 @@
             [entry-backed entry-backed-ok entry-backed-error] (vev.sqlite-entry-backed-index-chunk-count-for-test path)
             live-result (vev.q-result-store-text (addr reopened) "[:find ?e ?name :where [?e :user/name ?name]]")]
         (t.is entry-backed-ok entry-backed-error)
-        (t.is (= entry-backed 0))
+        ;; The four historical indexes choose payload runs for this bulk
+        ;; append. Current AVET deliberately keeps its bounded tx delta
+        ;; entry-backed for per-run binary seek.
+        (t.is (= entry-backed 1))
         (t.is live-result.result.ok live-result.result.error)
         (t.is (= (count live-result.result.rows) 150))
         (t.is (result-has-entity-string-row? live-result.result 1 "Ada"))
