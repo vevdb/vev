@@ -2,6 +2,7 @@
 
 (import os "core:os")
 (import fmt "core:fmt")
+(import strings "core:strings")
 (import thread "core:thread")
 (import test "kvist:test")
 (import kdata "kvist:data")
@@ -11,6 +12,7 @@
 (def concurrent-app-test-path "/tmp/vev-app-concurrent-test.sqlite")
 (def backup-source-test-path "/tmp/vev-app-backup-source.sqlite")
 (def backup-destination-test-path "/tmp/vev-app-backup-destination.sqlite")
+(def stale-resident-tail-test-path "/tmp/vev-app-stale-resident-tail-test.sqlite")
 
 (defstruct Concurrent-Reader [
   conn: d.Conn
@@ -89,6 +91,11 @@
   (os.remove backup-destination-test-path)
   (os.remove (fmt.tprintf "%s-wal" backup-destination-test-path))
   (os.remove (fmt.tprintf "%s-shm" backup-destination-test-path)))
+
+(defn remove-stale-resident-tail-test-db []
+  (os.remove stale-resident-tail-test-path)
+  (os.remove (fmt.tprintf "%s-wal" stale-resident-tail-test-path))
+  (os.remove (fmt.tprintf "%s-shm" stale-resident-tail-test-path)))
 
 (def backup-value-query
   '[:find ?value .
@@ -343,6 +350,61 @@
     (d.close db)
     (d.close final))
   (remove-app-test-db))
+
+(test.deftest stale-resident-writer-checkpoints-canonical-tail-before-publishing-delta
+  (remove-stale-resident-tail-test-db)
+  (let [stale (d.connect stale-resident-tail-test-path)
+        fresh (d.connect stale-resident-tail-test-path)]
+    (let [schema-report
+            (d.transact fresh
+              '[[:db/add 100 :db/ident :conflict/name]
+                [:db/add 100 :db/valueType :db.type/string]
+                [:db/add 100 :db/cardinality :db.cardinality/one]
+                [:db/add 101 :db/ident :conflict/marker]
+                [:db/add 101 :db/valueType :db.type/string]
+                [:db/add 101 :db/cardinality :db.cardinality/one]])
+          seed-report
+            (d.transact fresh
+              '[[:db/add 1 :conflict/name "ada"]])]
+      (test.is schema-report.ok schema-report.error)
+      (test.is seed-report.ok seed-report.error))
+    (let [[resident-ok resident-error] (d.ensure-resident! stale)]
+      (test.is resident-ok resident-error))
+    ;; These direct writes form a canonical tail after the schema root.
+    (let [external-report
+            (d.transact fresh
+              '[[:db/add 1 :conflict/name "grace"]])]
+      (test.is external-report.ok external-report.error))
+    ;; The stale attempt reloads the winning generation before reporting the
+    ;; semantic CAS failure.
+    (let [conflict-report
+            (d.transact stale
+              '[[:db.fn/cas 1 :conflict/name "ada" "wrong"]])]
+      (test.is (not conflict-report.ok))
+      (test.is (strings.contains conflict-report.error ":db.fn/cas failed")))
+    ;; Publishing this resident delta must first include every transaction in
+    ;; the canonical tail in its durable predecessor root.
+    (let [followup-report
+            (d.transact stale
+              '[[:db/add 2 :conflict/marker "after"]])]
+      (test.is followup-report.ok followup-report.error))
+    (d.close stale)
+    (d.close fresh))
+  (let [reopened (d.connect stale-resident-tail-test-path)
+        snapshot (d.db reopened)
+        name
+          (d.q '[:find ?name .
+                 :where [1 :conflict/name ?name]]
+               snapshot)
+        marker
+          (d.q '[:find ?marker .
+                 :where [2 :conflict/marker ?marker]]
+               snapshot)]
+    (test.is (= (kdata.string name) "grace"))
+    (test.is (= (kdata.string marker) "after"))
+    (d.close snapshot)
+    (d.close reopened))
+  (remove-stale-resident-tail-test-db))
 
 (test.deftest durable-app-connection-serializes-concurrent-reads-and-writes
   (remove-concurrent-app-test-db)

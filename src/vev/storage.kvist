@@ -2449,6 +2449,25 @@
 (defn transact-sqlite-shared-resident-store-report-tx-data
   [store: ^SQLite-Conn, tx-data: []Tx-Data]
   -> Store-Tx-Report
+  ;; A source-backed writer may have left a canonical novelty tail after the
+  ;; latest durable root. Publishing only this resident transaction's delta on
+  ;; top of that older root would skip every transaction in the tail. First
+  ;; checkpoint the exact resident generation so the following delta has a
+  ;; complete durable predecessor. The checkpoint rechecks the head under the
+  ;; writer lock; a concurrent commit returns the normal basis-change signal
+  ;; and lets the outer retry reload the winning generation.
+  (let [[head-basis indexed-basis _tail-transactions _tail-datoms
+         stats-ok stats-error]
+          (vev.sqlite-index-lag-stats-raw store^.handle)]
+    (when (not stats-ok)
+      (return (failed-sqlite-store-tx-report store stats-error)))
+    (when (> head-basis indexed-basis)
+      (let [[_checkpointed checkpoint-ok checkpoint-error]
+              (sqlite-conn-checkpoint-shared-resident! store)]
+        (discard _checkpointed)
+        (when (not checkpoint-ok)
+          (return
+            (failed-sqlite-store-tx-report store checkpoint-error))))))
   ;; Resolve once against the current persistent/chunked snapshot. The rich
   ;; report already contains cheap immutable before/after handles. Persistence
   ;; consumes a retained copy of that transition; only a successful SQLite
