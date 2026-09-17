@@ -88,3 +88,42 @@
         (d.close (addr report))))
     (d.close conn))
   (remove-report-value-test-db))
+
+(test.deftest public-kvist-try-pull-many-transfers-converted-data-ownership
+  (remove-report-value-test-db)
+  (let [conn (d.connect report-value-test-path)]
+    (let [schema
+            (d.transact
+              conn
+              [[:db/add 100 :db/ident :entity/id]
+               [:db/add 100 :db/valueType :db.type/string]
+               [:db/add 100 :db/unique :db.unique/identity]
+               [:db/add 101 :db/ident :entity/value]
+               [:db/add 101 :db/valueType :db.type/long]
+               [:db/add 101 :db/cardinality :db.cardinality/one]])]
+      (defer (d.close (addr schema)))
+      (test.is schema.ok schema.error))
+    (let [written
+            (d.transact
+              conn
+              [{:db/id "pull-many-entity"
+                :entity/id "pull-many-entity"
+                :entity/value 42}])]
+      (defer (d.close (addr written)))
+      (test.is written.ok written.error)
+      (let [[entity-id found?]
+              (d.resolve-tempid written.db-after written.tempids
+                "pull-many-entity")]
+        (test.is found?)
+        (let [[pulled ok error]
+                (d.try-pull-many-ids written.db-after
+                  [:entity/id :entity/value] [entity-id])]
+          (defer (data.release pulled))
+          (defer (delete error))
+          (test.is ok error)
+          (test.is (= (data.count pulled) 1))
+          (test.is
+            (= (data.string (data.get-in (data.nth pulled 0) [:entity/id]))
+               "pull-many-entity")))))
+    (d.close conn))
+  (remove-report-value-test-db))
