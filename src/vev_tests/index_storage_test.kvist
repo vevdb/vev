@@ -1504,6 +1504,52 @@
     (vev.delete-live-tx-report-shallow report)
     (vev.delete-shared-conn conn)))
 
+(t.deftest shared-conn-loads-tuple-schema-inventory-once-per-transaction
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        schema
+          (vev.shared-conn-transact
+            (addr conn)
+            ([]vev.Tx-Data
+              [(vev.add 100 ":db/ident" (vev.value-keyword ":user/id"))
+               (vev.add 100 ":db/valueType"
+                 (vev.value-keyword ":db.type/string"))
+               (vev.add 100 ":db/unique"
+                 (vev.value-keyword ":db.unique/identity"))
+               (vev.add 101 ":db/ident"
+                 (vev.value-keyword ":user/id+code"))
+               (vev.add 101 ":db/valueType"
+                 (vev.value-keyword ":db.type/tuple"))
+               (vev.add 101 ":db/tupleAttrs"
+                 (vev.value-keyword-vector
+                   ([]string [":user/id" ":user/code"])))
+               (vev.add 101 ":db/unique"
+                 (vev.value-keyword ":db.unique/identity"))]))
+        profile (vev.Tx-Phase-Profile :enabled true)]
+    (t.is schema.ok schema.error)
+    (set! conn.write.conn.tx-phase-profile (addr profile))
+    (let [report
+            (vev.shared-conn-transact
+              (addr conn)
+              ([]vev.Tx-Data
+                [(vev.add-tempid "first" ":user/id"
+                   (vev.value-string "first"))
+                 (vev.add-tempid "first" ":user/code"
+                   (vev.value-string "shared"))
+                 (vev.add-tempid "second" ":user/id"
+                   (vev.value-string "second"))
+                 (vev.add-tempid "second" ":user/code"
+                   (vev.value-string "shared"))
+                 (vev.add-tempid "third" ":user/id"
+                   (vev.value-string "third"))
+                 (vev.add-tempid "third" ":user/code"
+                   (vev.value-string "shared"))]))]
+      (t.is report.ok report.error)
+      (t.is (= profile.resolution-tuple-schema-inventory-count 1))
+      (vev.delete-live-tx-report-shallow report))
+    (vev.delete-live-tx-report-shallow schema)
+    (vev.delete-shared-conn conn)))
+
 (t.deftest shared-conn-merges-tuple-tempids-with-ordered-tuple-transitions
   (defer (free_all context.allocator))
   (let [conn (vev.create-shared-conn 2)

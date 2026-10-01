@@ -96,6 +96,11 @@ The optimization is transaction-local. Schema changes in a later transaction
 are observed by its fresh inventory, and same-transaction schema declarations
 continue through the existing declared-schema path.
 
+The opt-in transaction phase profile counts successful tuple-schema inventory
+loads. A deterministic regression test exercises several tempids and tuple
+components in one source transaction and requires that count to remain exactly
+one; wall-clock timing is not used as the correctness guard.
+
 ## Result
 
 Same-shape Ro matrix, before and after:
