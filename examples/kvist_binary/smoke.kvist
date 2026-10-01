@@ -357,7 +357,10 @@
              [:db/add 101 :db/cardinality :db.cardinality/one]
              [:db/add 102 :db/ident :person/nickname]
              [:db/add 102 :db/valueType :db.type/string]
-             [:db/add 102 :db/cardinality :db.cardinality/one]])]
+             [:db/add 102 :db/cardinality :db.cardinality/one]
+             [:db/add 103 :db/ident :maintenance/value]
+             [:db/add 103 :db/valueType :db.type/string]
+             [:db/add 103 :db/cardinality :db.cardinality/one]])]
       (defer (d.close (addr schema)))
       (when (not schema.ok)
         (panic schema.error))
@@ -457,6 +460,25 @@
           (when (or (not (data.vector? tx-data))
                     (= (data.count tx-data) 0))
             (panic "binary Kvist tx-range omitted transaction datoms")))))
+    ;; The public native/Kvist durable boundary must perform the same bounded
+    ;; automatic maintenance as the in-process Store facade. Without it each
+    ;; small transaction becomes another immutable index run and ordinary
+    ;; query latency grows linearly with database age.
+    (for [index (arr.range 0 24)]
+      (let [nickname (fmt.aprintf "Maintenance nickname %02d" index)]
+        (defer (delete nickname))
+        (let [maintenance-write
+                (d.transact conn
+                  [[:db/add [:person/id "ada"]
+                            :maintenance/value nickname]])]
+          (defer (d.close (addr maintenance-write)))
+          (when (not maintenance-write.ok)
+            (panic maintenance-write.error)))))
+    (for [index-name [":eavt" ":aevt" ":avet" ":vaet"]]
+      (let [run-count (d.latest-index-merge-run-count conn index-name)]
+        (when (or (< run-count 0) (>= run-count 8))
+          (panic
+            "binary Kvist durable writes did not bound index run fanout"))))
     (when (< (d.latest-index-merge-run-count conn ":eavt") 0)
       (panic "binary Kvist client could not inspect index run count"))
     (when (not (d.maintain-indexes! conn 8))

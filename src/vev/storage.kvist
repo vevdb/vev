@@ -2967,40 +2967,68 @@
     (set! store^.auto-maintenance-trigger 1)
     (return true "")))
 
+(defn run-sqlite-auto-maintenance!
+  [sqlite: ^SQLite-Conn, max-steps: int, target-pending: u64,
+   trigger-pending: u64]
+  -> [steps: int, compacted: bool, pending: u64, ok: bool, error: string]
+  (let [[current-pending pending-ok pending-error]
+          (sqlite-conn-index-maintenance-count sqlite)]
+    (when (not pending-ok)
+      (return 0 false 0 false pending-error))
+    ;; Small source-backed transactions append immutable runs without an
+    ;; explicit maintenance queue row. Inspect current fanout as well as the
+    ;; queue so every durable client keeps read amplification bounded.
+    (when (< current-pending trigger-pending)
+      (let [[eavt-runs _ eavt-ok eavt-error]
+              (sqlite-latest-index-root-merge-run-count sqlite^.handle
+                ":eavt")]
+        (when (not eavt-ok)
+          (return 0 false current-pending false eavt-error))
+        (let [[aevt-runs _ aevt-ok aevt-error]
+                (sqlite-latest-index-root-merge-run-count sqlite^.handle
+                  ":aevt")]
+          (when (not aevt-ok)
+            (return 0 false current-pending false aevt-error))
+          (let [[avet-runs _ avet-ok avet-error]
+                  (sqlite-latest-index-root-merge-run-count sqlite^.handle
+                    ":avet")]
+            (when (not avet-ok)
+              (return 0 false current-pending false avet-error))
+            (let [[vaet-runs _ vaet-ok vaet-error]
+                    (sqlite-latest-index-root-merge-run-count sqlite^.handle
+                      ":vaet")]
+              (when (not vaet-ok)
+                (return 0 false current-pending false vaet-error))
+              (let [max-runs
+                      (max (max eavt-runs aevt-runs)
+                        (max avet-runs vaet-runs))]
+                (when (< (u64 max-runs) trigger-pending)
+                  (return 0 false current-pending true ""))))))))
+    (let [[completed-steps did-compact remaining maintenance-ok maintenance-error]
+            (sqlite-conn-maintain-indexes-to-target-foreground! sqlite
+              max-steps target-pending
+              sqlite-index-auto-maintenance-row-budget)]
+      (when (not maintenance-ok)
+        (return completed-steps did-compact remaining false maintenance-error))
+      (let [[prune-ok prune-error]
+              (sqlite-conn-prune-obsolete-index-artifacts! sqlite)]
+        (return completed-steps did-compact remaining prune-ok prune-error)))))
+
+(defn run-default-sqlite-auto-maintenance! [sqlite: ^SQLite-Conn]
+  -> [steps: int, compacted: bool, pending: u64, ok: bool, error: string]
+  (run-sqlite-auto-maintenance! sqlite sqlite-index-auto-maintenance-steps
+    sqlite-index-auto-maintenance-target
+    sqlite-index-auto-maintenance-trigger))
+
 (defn run-store-auto-maintenance! [store: ^Store-Conn] -> [steps: int, compacted: bool, pending: u64, ok: bool, error: string]
   (if store^.auto-maintenance-enabled
-    (let [[pending pending-ok pending-error] (store-index-maintenance-count store)]
-      (when (not pending-ok)
-        (return 0 false 0 false pending-error))
-      (when (< pending store^.auto-maintenance-trigger)
-        (case store^.kind
-          .SQLite
-            (let [[eavt-runs _ eavt-ok eavt-error] (sqlite-latest-index-root-merge-run-count store^.sqlite.handle ":eavt")]
-              (when (not eavt-ok)
-                (return 0 false pending false eavt-error))
-              (let [[aevt-runs _ aevt-ok aevt-error] (sqlite-latest-index-root-merge-run-count store^.sqlite.handle ":aevt")]
-                (when (not aevt-ok)
-                  (return 0 false pending false aevt-error))
-                (let [[avet-runs _ avet-ok avet-error] (sqlite-latest-index-root-merge-run-count store^.sqlite.handle ":avet")]
-                  (when (not avet-ok)
-                    (return 0 false pending false avet-error))
-                  (let [[vaet-runs _ vaet-ok vaet-error] (sqlite-latest-index-root-merge-run-count store^.sqlite.handle ":vaet")]
-                    (when (not vaet-ok)
-                      (return 0 false pending false vaet-error))
-                    (let [max-runs (max (max eavt-runs aevt-runs) (max avet-runs vaet-runs))]
-                      (when (< (u64 max-runs) store^.auto-maintenance-trigger)
-                        (return 0 false pending true "")))))))
-           (return 0 false pending true "")))
-      (case store^.kind
-        .SQLite
-          (let [[steps compacted remaining maintenance-ok maintenance-error]
-                  (sqlite-conn-maintain-indexes-to-target-foreground! (addr store^.sqlite) store^.auto-maintenance-steps store^.auto-maintenance-target sqlite-index-auto-maintenance-row-budget)]
-            (when (not maintenance-ok)
-              (return steps compacted remaining false maintenance-error))
-            (let [[prune-ok prune-error] (sqlite-conn-prune-obsolete-index-artifacts! (addr store^.sqlite))]
-              (return steps compacted remaining prune-ok prune-error)))
-        .Shared (return 0 false 0 true "")
-         (return 0 false pending false "store is not open")))
+    (case store^.kind
+      .SQLite
+        (run-sqlite-auto-maintenance! (addr store^.sqlite)
+          store^.auto-maintenance-steps store^.auto-maintenance-target
+          store^.auto-maintenance-trigger)
+      .Shared (return 0 false 0 true "")
+       (return 0 false 0 false "store is not open"))
     (let [[pending pending-ok pending-error] (store-index-maintenance-count store)]
       (return 0 false pending pending-ok pending-error))))
 

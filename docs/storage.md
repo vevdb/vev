@@ -117,6 +117,13 @@ database value merges its bounded in-memory tail with the persisted current
 page, so a committed transaction is page-queryable without first forcing a
 checkpoint.
 
+Both the in-process Store facade and native ABI durable write boundaries run
+the same bounded automatic maintenance policy when queue depth or current run
+fanout reaches its trigger. This prevents read amplification from growing with
+the number of small ABI transactions. See
+[Native ABI index maintenance](native-abi-index-maintenance.md) for the
+regression, bounds, and existing-database guidance.
+
 The canonical novelty suffix has a hard 4,096-datom admission bound, checked
 inside the SQLite writer transaction by a `vev_datoms(tx)` range probe. A
 log-only transaction which would cross that bound rolls back and asks the

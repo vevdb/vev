@@ -1077,6 +1077,29 @@
     (abi-sqlite-conn-notify-tx-listeners (rawptr conn) (rawptr handle))
     (tx-report-handle-free handle)))
 
+;; The ABI owns a SQLite-Conn directly rather than the higher Store-Conn used
+;; by the in-process application facade. Keep the same bounded automatic index
+;; maintenance on this public durable write boundary; otherwise each small ABI
+;; transaction remains a separate immutable run and read amplification grows
+;; linearly with database age.
+(defn- auto-maintain-abi-sqlite-after-report!
+  [conn: Vev-SQLite-Conn, report: ^vev.Store-Tx-Report]
+  (when (or (= report nil) (not report^.ok))
+    (return))
+  (let [sqlite (sqlite-conn-ptr conn)
+        [_steps compacted _pending maintenance-ok _maintenance-error]
+          (vev.run-default-sqlite-auto-maintenance! sqlite)]
+    (discard _steps)
+    (discard _pending)
+    (discard _maintenance-error)
+    ;; Maintenance is derived and best effort. A failure must not change an
+    ;; already durable transaction result, but no stale root cache may survive.
+    (vev.sqlite-conn-invalidate-current-root-cache! sqlite)
+    (when (and maintenance-ok (not compacted))
+      (discard
+        (vev.sqlite-conn-cache-current-root-from-store-db! sqlite
+          (addr report^.db-after))))))
+
 (defn- delete-tx-builder-entry-owned [data: vev.Tx-Data]
   (delete data.a)
   (vev.delete-owned-value data.v))
@@ -3218,6 +3241,7 @@
          (tx-boundary-profile-elapsed-us conn input-start)))
     (let [engine-start (tx-boundary-profile-start conn)
           report (vev.transact-sqlite-store-report-text (sqlite-conn-ptr conn) tx)]
+      (auto-maintain-abi-sqlite-after-report! conn (addr report))
       (set! profile^.engine-us
         (+ profile^.engine-us
            (tx-boundary-profile-elapsed-us conn engine-start)))
@@ -3251,12 +3275,13 @@
     (return (Vev-Tx-Report nil)))
   (let [tx (text-from-c tx-text)
         entries (tx-fn-registry-source-entries-ptr registry)
-        report (vev.transact-sqlite-store-report-text-with-source-string-fns (sqlite-conn-ptr conn) tx (slice entries^ 0))
-        out (tx-report-handle-from-store-report report)]
-    (notify-abi-sqlite-tx-listeners! conn report)
-    (abi-sqlite-conn-store-tx-source (rawptr conn) tx)
-    (vev.delete-store-tx-report report)
-    out))
+        report (vev.transact-sqlite-store-report-text-with-source-string-fns (sqlite-conn-ptr conn) tx (slice entries^ 0))]
+    (auto-maintain-abi-sqlite-after-report! conn (addr report))
+    (let [out (tx-report-handle-from-store-report report)]
+      (notify-abi-sqlite-tx-listeners! conn report)
+      (abi-sqlite-conn-store-tx-source (rawptr conn) tx)
+      (vev.delete-store-tx-report report)
+      out)))
 
 @export
 (defn vev_sqlite_conn_tx_commit_report :abi "c" [conn: Vev-SQLite-Conn, builder: Vev-Tx-Builder] -> Vev-Tx-Report
@@ -3264,11 +3289,12 @@
   (when (or (= (rawptr conn) nil) (= (rawptr builder) nil) (not (abi-sqlite-conn-ok (rawptr conn))))
     (return (Vev-Tx-Report nil)))
   (let [tx-data (tx-builder-data-ptr builder)
-        report (vev.transact-sqlite-store-report-tx-data (sqlite-conn-ptr conn) (slice tx-data^ 0))
-        out (tx-report-handle-from-store-report report)]
-    (notify-abi-sqlite-tx-listeners! conn report)
-    (vev.delete-store-tx-report report)
-    out))
+        report (vev.transact-sqlite-store-report-tx-data (sqlite-conn-ptr conn) (slice tx-data^ 0))]
+    (auto-maintain-abi-sqlite-after-report! conn (addr report))
+    (let [out (tx-report-handle-from-store-report report)]
+      (notify-abi-sqlite-tx-listeners! conn report)
+      (vev.delete-store-tx-report report)
+      out)))
 
 @export
 (defn vev_sqlite_conn_tx_commit_many_report :abi "c" [conn: Vev-SQLite-Conn, builders: rawptr, builder-count: int] -> Vev-Tx-Report
@@ -3282,12 +3308,13 @@
             out (tx-report-handle-from-store-report failed)]
         (vev.delete-store-tx-report failed)
         (return out)))
-    (let [report (vev.transact-sqlite-store-report-tx-data-groups (sqlite-conn-ptr conn) (slice groups 0))
-          out (tx-report-handle-from-store-report report)]
-      (notify-abi-sqlite-tx-listeners! conn report)
-      (vev.delete-store-tx-report report)
-      (delete-store-tx-data-groups groups)
-      out)))
+    (let [report (vev.transact-sqlite-store-report-tx-data-groups (sqlite-conn-ptr conn) (slice groups 0))]
+      (auto-maintain-abi-sqlite-after-report! conn (addr report))
+      (let [out (tx-report-handle-from-store-report report)]
+        (notify-abi-sqlite-tx-listeners! conn report)
+        (vev.delete-store-tx-report report)
+        (delete-store-tx-data-groups groups)
+        out))))
 
 @export
 (defn vev_sqlite_conn_tx_commit_logical_many_reports :abi "c" [conn: Vev-SQLite-Conn, builders: rawptr, builder-count: int] -> Vev-Tx-Report-Array
@@ -3311,6 +3338,9 @@
               out (tx-report-array-handle-from-store-report failed)]
           (vev.delete-store-tx-report failed)
           (return out)))
+      (when (> (count reports) 0)
+        (auto-maintain-abi-sqlite-after-report! conn
+          (addr reports[(- (count reports) 1)])))
       (let [out (tx-report-array-handle-from-store-reports (slice reports 0))]
         (for [report reports]
           (notify-abi-sqlite-tx-listeners! conn report))
@@ -3340,6 +3370,9 @@
               out (tx-report-array-handle-from-store-report failed)]
           (vev.delete-store-tx-report failed)
           (return out)))
+      (when (> (count reports) 0)
+        (auto-maintain-abi-sqlite-after-report! conn
+          (addr reports[(- (count reports) 1)])))
       (let [out (tx-report-array-handle-from-store-reports (slice reports 0))]
         (for [report reports]
           (notify-abi-sqlite-tx-listeners! conn report))
