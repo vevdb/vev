@@ -603,6 +603,30 @@
     (persist-current-avet-root-page-with-stmts!
       handle stmts basis-tx root-row-id entries)))
 
+(defn persist-current-avet-root-page-from-log-with-stmts!
+  [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts, basis-tx: u64,
+   root-row-id: u64]
+  -> [ok: bool, error: string]
+  ;; A store created before the normalized `:current-avet` page existed (or
+  ;; affected by an older maintenance bug which dropped that page) still has
+  ;; complete canonical history. Rebuild the missing derived page once at the
+  ;; first subsequent write. The ordinary delta path remains unchanged.
+  (let [[row-text rows-ok rows-error]
+          (vev.sqlite-load-datom-rows-text-handle-raw handle)]
+    (when (not rows-ok)
+      (delete row-text)
+      (return false rows-error))
+    (defer (delete row-text))
+    (let [[current-db current-ok current-error]
+            (from-serializable-text row-text)]
+      (when (not current-ok)
+        (delete-owned-db current-db)
+        (return false current-error))
+      (defer (delete-owned-db current-db))
+      (persist-current-avet-root-page-with-stmts!
+        handle stmts basis-tx root-row-id
+        (slice current-db.current-avet 0)))))
+
 (defn persist-current-avet-delta-root-page-with-stmts!
   [handle: rawptr, stmts: ^SQLite-Index-Write-Stmts,
    previous-basis: u64, basis-tx: u64, root-row-id: u64,
@@ -632,8 +656,21 @@
               (sqlite-index-root-row-id-at-basis handle previous-basis)]
         (discard _previous-root)
         (when previous-root-ok
-          (return false
-            "sqlite DB basis has no persisted current AVET root"))
+          (let [[_current-root _current-manifest current-found current-page-ok current-page-error]
+                  (vev.sqlite-index-root-page-at-basis-raw
+                    handle ":current-avet" previous-basis)]
+            (discard _current-root)
+            (discard _current-manifest)
+            (when (not current-page-ok)
+              (return false current-page-error))
+            ;; Only absence is recoverable. A page which exists but cannot be
+            ;; opened denotes damaged derived state and must not be disguised
+            ;; as an ordinary compatibility rebuild.
+            (when current-found
+              (return false old-error))
+            (return
+              (persist-current-avet-root-page-from-log-with-stmts!
+                handle stmts basis-tx root-row-id))))
         ;; The first durable basis has no predecessor. Its transaction delta
         ;; is therefore already the complete current-index lineage.
         (let [[first-root first-ok first-error]

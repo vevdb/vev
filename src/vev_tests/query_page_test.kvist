@@ -464,6 +464,59 @@
         (vev.delete-tx-report-shallow written))
       (vev.close-sqlite-conn store))))
 
+(t.deftest sqlite-current-avet-delta-publication-rebuilds-an-absent-page
+  (defer (free_all context.allocator))
+  (let [path "tmp.vev.query-page-missing-current-root.sqlite"]
+    (remove-page-sqlite-files path)
+    (defer (remove-page-sqlite-files path))
+    (let [[store store-ok store-error] (vev.open-sqlite-conn path)]
+      (t.is store-ok store-error)
+      (let [seed
+              (vev.transact-sqlite-store-report-text
+                (addr store)
+                "[{:db/id 100 :db/ident :item/state :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                  {:db/id 1 :item/state \"open\"}]")
+            delete-page-rc
+              (vev.sqlite-app-exec-raw
+                store.handle
+                "DELETE FROM vev_index_root_pages
+                  WHERE root_id = (SELECT MAX(root_id) FROM vev_index_roots)
+                    AND index_name = ':current-avet';")]
+        (t.is seed.ok seed.error)
+        (t.is (= delete-page-rc 0))
+        (vev.delete-store-tx-report seed))
+      (vev.close-sqlite-conn store))
+    (let [[reopened reopened-ok reopened-error] (vev.open-sqlite-conn path)
+          [previous-basis previous-ok previous-error]
+            (vev.sqlite-conn-latest-index-root-basis (addr reopened))]
+      (t.is reopened-ok reopened-error)
+      (t.is previous-ok previous-error)
+      (when previous-ok
+        (let [next-basis (+ previous-basis 1)
+              [begin-ok begin-error]
+                (vev.sqlite-begin-immediate-raw reopened.handle)
+              [root-row root-ok root-error]
+                (vev.sqlite-republish-latest-index-root-set!
+                  reopened.handle next-basis)
+              [page-ok page-error]
+                (vev.persist-current-avet-delta-root-page-with-stmts!
+                  reopened.handle nil previous-basis next-basis root-row
+                  ([]int [0]) ([]vev.Datom []) 0)
+              [commit-ok commit-error]
+                (vev.sqlite-commit-raw reopened.handle)]
+          (t.is begin-ok begin-error)
+          (t.is root-ok root-error)
+          (t.is page-ok page-error)
+          (t.is commit-ok commit-error)
+          (let [[_root _manifest found current-ok current-error]
+                  (vev.sqlite-index-root-page-at-basis-raw
+                    reopened.handle ":current-avet" next-basis)]
+            (discard _root)
+            (discard _manifest)
+            (t.is current-ok current-error)
+            (t.is found))))
+      (vev.close-sqlite-conn reopened))))
+
 (t.deftest q-page-merges-ordinary-sqlite-log-tail-with-exact-as-of
   (defer (free_all context.allocator))
   (let [path "tmp.vev.query-page-log-tail.sqlite"]
