@@ -1286,6 +1286,11 @@
   added-attrs: (map string (struct []))
   batch-resolved-attrs: (map string (struct []))
   non-tuple-attrs: (map string (struct []))
+  tuple-component-attrs: (map string (struct []))
+  tuple-value-attrs: (map string (struct []))
+  owned-tuple-component-attrs: [dynamic]string
+  tuple-schemas: [dynamic]Tuple-Schema
+  tuple-component-attrs-loaded: bool
 ])
 
 (defn source-tx-resolve-index [tx-data: []Tx-Data] -> Source-Tx-Resolve-Index
@@ -1298,7 +1303,12 @@
                :resolved-unique (set.empty string)
                :added-attrs (set.empty string)
                :batch-resolved-attrs (set.empty string)
-               :non-tuple-attrs (set.empty string))]
+               :non-tuple-attrs (set.empty string)
+               :tuple-component-attrs (set.empty string)
+               :tuple-value-attrs (set.empty string)
+               :owned-tuple-component-attrs (make [dynamic]string)
+               :tuple-schemas (make [dynamic]Tuple-Schema)
+               :tuple-component-attrs-loaded false)]
     (arr.fill! out.next-by-data -1)
     (for [data index tx-data]
       (when data.has-tempid
@@ -1321,9 +1331,75 @@
   (delete index.added-attrs)
   (delete index.batch-resolved-attrs)
   (delete index.non-tuple-attrs)
+  (for [attr index.owned-tuple-component-attrs]
+    (delete attr))
+  (delete index.owned-tuple-component-attrs)
+  (delete index.tuple-component-attrs)
+  (delete index.tuple-value-attrs)
+  (shared-write-state-delete-source-tuple-schemas index.tuple-schemas)
   (delete index.next-by-data)
   (delete index.tempid-tail)
   (delete index.tempid-head))
+
+(defn source-tx-resolve-index-preload-tuple-components!
+  [index: ^Source-Tx-Resolve-Index, source: DB-Read-Source]
+  -> [ok: bool, error: string]
+  (let [[datoms datoms-ok datoms-error]
+          (db-read-source-datoms-by-attr source ":db/tupleAttrs")]
+    (when (not datoms-ok)
+      (delete-owned-datoms datoms)
+      (return false datoms-error))
+    (for [datom datoms]
+      (when (= datom.v.kind .Vector)
+        (let [[tuple-attr ident-ok ident-error]
+                (db-read-source-schema-ident-for-entity source datom.e)]
+          (when (not ident-ok)
+            (when (not (= ident-error ""))
+              (delete-owned-datoms datoms)
+              (return false ident-error))
+            (continue))
+          (let [attrs (make [dynamic]string 0 (count datom.v.items))]
+            (for [item datom.v.items]
+              (when (= item.kind .Keyword)
+                (arr.push! attrs (string-owned item.text))))
+            (set.add! index^.tuple-value-attrs tuple-attr)
+            (arr.push! index^.tuple-schemas
+              (Tuple-Schema :attr tuple-attr :attrs attrs))))
+        (for [item datom.v.items]
+          (when (and (= item.kind .Keyword)
+                     (not
+                       (set.contains?
+                         index^.tuple-component-attrs item.text)))
+            (let [owned (string-owned item.text)]
+              (set.add! index^.tuple-component-attrs owned)
+              (arr.push! index^.owned-tuple-component-attrs owned))))))
+    (delete-owned-datoms datoms)
+    (set! index^.tuple-component-attrs-loaded true)
+    (return true "")))
+
+(defn source-tx-resolve-index-tuple-component?
+  [index: ^Source-Tx-Resolve-Index, attr: string] -> bool
+  (or (= index nil)
+      (not index^.tuple-component-attrs-loaded)
+      (set.contains? index^.tuple-component-attrs attr)))
+
+(defn source-tx-resolve-index-tuple-schemas-containing
+  [index: ^Source-Tx-Resolve-Index, source: DB-Read-Source, attr: string]
+  -> [schemas: [dynamic]Tuple-Schema, ok: bool, error: string]
+  (when (or (= index nil)
+            (not index^.tuple-component-attrs-loaded))
+    (return (db-read-source-tuple-schemas-containing source attr)))
+  (let [out (make [dynamic]Tuple-Schema)]
+    (for [schema index^.tuple-schemas]
+      (when (tuple-schema-contains? schema attr)
+        (let [attrs (make [dynamic]string 0 (count schema.attrs))]
+          (for [component schema.attrs]
+            (arr.push! attrs (string-owned component)))
+          (arr.push! out
+            (Tuple-Schema
+              :attr (string-owned schema.attr)
+              :attrs attrs)))))
+    (return out true "")))
 
 (defn source-tx-resolve-index-put-unique! [index: ^Source-Tx-Resolve-Index, key: string, entity: u64] -> bool
   (let [[existing found] (mmap.get index^.unique-entity key)]
@@ -1461,6 +1537,15 @@
                 (tx-phase-profile-add-resolution-lookup-ref! state^.conn.tx-phase-profile lookup-start)
                 (when (not (= lookup-error ""))
                   (return 0 false false lookup-error))
+                (when key-ok
+                  (if entity-ok
+                    (when
+                      (not
+                        (source-tx-resolve-index-put-unique!
+                          resolve-index (strings.clone unique-key) entity))
+                      (return found false true ""))
+                    (source-tx-resolve-index-put-missing!
+                      resolve-index (strings.clone unique-key))))
                 (when entity-ok
                   (when (and has-found
                              (not (= found entity)))
@@ -1525,6 +1610,31 @@
                 (set! has-found true)))))))
     (return found has-found false "")))
 
+(defn source-tx-tempid-schema-has-known-missing-identity?
+  [state: ^Shared-Write-State, tx-data: []Tx-Data, tempid: string,
+   schema-attrs: []string, resolve-index: ^Source-Tx-Resolve-Index]
+  -> bool
+  (when (= resolve-index nil)
+    (return false))
+  (for [data tx-data]
+    (when (and data.has-tempid
+               (= data.tempid tempid)
+               (= data.op ":db/add")
+               (shared-write-state-schema-unique-identity? state data.a)
+               (not data.has-value-tempid)
+               (not data.has-value-lookup-ref))
+      (let [component false]
+        (for [attr schema-attrs]
+          (when (= attr data.a)
+            (set! component true)))
+        (when component
+          (let [[_ found resolved]
+                  (source-tx-resolve-index-lookup
+                    resolve-index data.a data.v)]
+            (when (and resolved (not found))
+              (return true)))))))
+  false)
+
 (defn shared-write-state-source-simple-tempid-tuple-upsert-entity [state: ^Shared-Write-State, source: DB-Read-Source, tx-data: []Tx-Data, tempid: string, tempid-index: (ptr (map string u64)), tempids: ^[dynamic]Tempid, next-e: ^u64, declared-schema?: bool :default true, resolve-index: (ptr Source-Tx-Resolve-Index) :default nil] -> [e: u64, ok: bool, conflict: bool, error: string]
   (let [found: u64 0
         has-found false
@@ -1535,11 +1645,25 @@
                       (= data.tempid tempid)
                       (= data.op ":db/add")))
         (continue))
-      (let [[schemas schemas-ok schemas-error] (db-read-source-tuple-schemas-containing source data.a)]
+      (when
+        (not
+          (source-tx-resolve-index-tuple-component?
+            resolve-index data.a))
+        (continue))
+      (let [[schemas schemas-ok schemas-error]
+              (source-tx-resolve-index-tuple-schemas-containing
+                resolve-index source data.a)]
         (when (not schemas-ok)
           (return found false false schemas-error))
         (for [schema schemas]
           (when (not (shared-write-state-schema-unique-identity? state schema.attr))
+            (continue))
+          ;; A persisted tuple cannot contain an already-probed, absent
+          ;; identity component. Other tuple schemas for the same tempid must
+          ;; still be checked.
+          (when
+            (source-tx-tempid-schema-has-known-missing-identity?
+              state tx-data tempid (slice schema.attrs 0) resolve-index)
             (continue))
           (when (tuple-schema-already-seen? (slice seen 0) schema.attr)
             (continue))
@@ -1752,36 +1876,54 @@
           (return false retract-error)))))
   (return true ""))
 
-(defn shared-write-state-append-source-tuple-maintenance-op! [ops: ^[dynamic]Tx-Op, source: DB-Read-Source, tx-data: []Tx-Data, op: Tx-Op] -> [ok: bool, error: string]
+(defn shared-write-state-append-source-tuple-maintenance-op!
+  [ops: ^[dynamic]Tx-Op, source: DB-Read-Source, tx-data: []Tx-Data,
+   op: Tx-Op, resolve-index: (ptr Source-Tx-Resolve-Index) :default nil,
+   declared-tuple-schema?: bool :default true]
+  -> [ok: bool, error: string]
   (when (or op.derived
             (= op.a ":db/tupleAttrs"))
     (return true ""))
-  (let [[schemas schemas-ok schemas-error] (db-read-source-tuple-schemas-containing source op.a)]
-    (when (not schemas-ok)
-      (return false schemas-error))
-    (for [schema schemas]
-      (let [[ok error] (shared-write-state-apply-source-tuple-schema-maintenance! ops source op schema)]
-        (when (not ok)
-          (shared-write-state-delete-source-tuple-schemas schemas)
-          (return false error))))
-    (shared-write-state-delete-source-tuple-schemas schemas)
+  (when (source-tx-resolve-index-tuple-component? resolve-index op.a)
+    (let [[schemas schemas-ok schemas-error]
+            (source-tx-resolve-index-tuple-schemas-containing
+              resolve-index source op.a)]
+      (when (not schemas-ok)
+        (return false schemas-error))
+      (for [schema schemas]
+        (let [[ok error]
+                (shared-write-state-apply-source-tuple-schema-maintenance!
+                  ops source op schema)]
+          (when (not ok)
+            (shared-write-state-delete-source-tuple-schemas schemas)
+            (return false error))))
+      (shared-write-state-delete-source-tuple-schemas schemas)))
+  (when declared-tuple-schema?
     (let [declared (shared-write-state-declared-tuple-schemas-containing tx-data op.a)]
       (for [schema declared]
         (let [[ok error] (shared-write-state-apply-source-tuple-schema-maintenance! ops source op schema)]
           (when (not ok)
             (shared-write-state-delete-source-tuple-schemas declared)
             (return false error))))
-      (shared-write-state-delete-source-tuple-schemas declared))
-    (return true "")))
+      (shared-write-state-delete-source-tuple-schemas declared)))
+  (return true ""))
 
-(defn shared-write-state-append-source-tuple-maintenance-for-new-ops! [state: ^Shared-Write-State, ops: ^[dynamic]Tx-Op, source: DB-Read-Source, tx-data: []Tx-Data, start-index: int, declared-tuple-schema?: bool :default true] -> [ok: bool, error: string]
+(defn shared-write-state-append-source-tuple-maintenance-for-new-ops!
+  [state: ^Shared-Write-State, ops: ^[dynamic]Tx-Op,
+   source: DB-Read-Source, tx-data: []Tx-Data, start-index: int,
+   declared-tuple-schema?: bool :default true,
+   resolve-index: (ptr Source-Tx-Resolve-Index) :default nil]
+  -> [ok: bool, error: string]
   (when (and (not state^.has-tuple-schema)
              (not declared-tuple-schema?))
     (return true ""))
   (let [end-index (count ops^)
         index start-index]
     (while (< index end-index)
-      (let [[ok error] (shared-write-state-append-source-tuple-maintenance-op! ops source tx-data ops^[index])]
+      (let [[ok error]
+              (shared-write-state-append-source-tuple-maintenance-op!
+                ops source tx-data ops^[index] resolve-index
+                declared-tuple-schema?)]
         (when (not ok)
           (return false error)))
       (set! index (+ index 1))))
@@ -2042,6 +2184,11 @@
       (do
         (when (and (not (= resolve-index nil))
                    (not declared-schema?))
+          (when (and resolve-index^.tuple-component-attrs-loaded
+                     (not
+                       (set.contains?
+                         resolve-index^.tuple-value-attrs data.a)))
+            (return data.v true false ""))
           (when (set.contains? resolve-index^.non-tuple-attrs data.a)
             (return data.v true false ""))
           (let [[tuple-attrs tuple-ok tuple-error] (db-read-source-schema-tuple-attrs source data.a)]
@@ -2157,6 +2304,16 @@
                               :ops resolved-ops
                               :tx-meta resolved-meta
                               :tempids resolved-tempids))))
+    (when state^.has-tuple-schema
+      (let [[tuple-preload-ok tuple-preload-error]
+              (source-tx-resolve-index-preload-tuple-components!
+                (addr resolve-index) source)]
+        (when (not tuple-preload-ok)
+          (return (Resolved-Tx :ok false
+                                :error tuple-preload-error
+                                :ops resolved-ops
+                                :tx-meta resolved-meta
+                                :tempids resolved-tempids)))))
     (let [[prepared-ok prepared-error] (shared-write-state-prepare-source-simple-tempids! state source tx-data (addr tempid-index) (addr resolved-tempids) (addr next-e) declared-schema? (addr resolve-index))]
       (tx-phase-profile-add-resolution-tempids! state^.conn.tx-phase-profile tempid-start (count resolved-tempids))
       (when (not prepared-ok)
@@ -2196,7 +2353,7 @@
                                     :ops resolved-ops
                                     :tx-meta resolved-meta
                                     :tempids resolved-tempids)))
-            (let [[tuple-ok tuple-error] (shared-write-state-append-source-tuple-maintenance-for-new-ops! state (addr resolved-ops) source tx-data start-index declared-tuple-schema?)]
+            (let [[tuple-ok tuple-error] (shared-write-state-append-source-tuple-maintenance-for-new-ops! state (addr resolved-ops) source tx-data start-index declared-tuple-schema? (addr resolve-index))]
               (when (not tuple-ok)
                 (return (Resolved-Tx :ok false
                                       :error tuple-error
@@ -2213,7 +2370,7 @@
                                     :ops resolved-ops
                                     :tx-meta resolved-meta
                                     :tempids resolved-tempids)))
-            (let [[tuple-ok tuple-error] (shared-write-state-append-source-tuple-maintenance-for-new-ops! state (addr resolved-ops) source tx-data start-index declared-tuple-schema?)]
+            (let [[tuple-ok tuple-error] (shared-write-state-append-source-tuple-maintenance-for-new-ops! state (addr resolved-ops) source tx-data start-index declared-tuple-schema? (addr resolve-index))]
               (when (not tuple-ok)
                 (return (Resolved-Tx :ok false
                                       :error tuple-error
@@ -2279,7 +2436,7 @@
               (if (= data.op ":db/retract")
                 (arr.push! resolved-ops (tx-op-with-map-group (tx-retract e data.a value) data.map-group))
                 (arr.push! resolved-ops (tx-op-with-map-group (tx-add e data.a value) data.map-group))))
-            (let [[tuple-ok tuple-error] (shared-write-state-append-source-tuple-maintenance-for-new-ops! state (addr resolved-ops) source tx-data start-index declared-tuple-schema?)]
+            (let [[tuple-ok tuple-error] (shared-write-state-append-source-tuple-maintenance-for-new-ops! state (addr resolved-ops) source tx-data start-index declared-tuple-schema? (addr resolve-index))]
               (when (not tuple-ok)
                 (return (Resolved-Tx :ok false
                                       :error tuple-error

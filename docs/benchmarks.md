@@ -111,6 +111,25 @@ See [resident transaction resolution and
 planning](transaction-resolution-planning-profile.md) for the root cause,
 scaling matrix, reference-planner differential, and current budgets.
 
+### Ro production-schema transaction profile
+
+`ro_transaction_profile.kvist` isolates the Item-plus-operation-receipt shape
+which exposed repeated tuple-schema discovery under Ro's production schema.
+It operates only on an explicit disposable Ro database path:
+
+```sh
+kvist compile bench/ro_transaction_profile.kvist \
+  -o build/bench/ro-transaction-profile.odin
+odin build build/bench/ro-transaction-profile.odin \
+  -file -o:speed -out:build/bench/ro-transaction-profile
+build/bench/ro-transaction-profile /path/to/disposable-ro.vev \
+  --samples 20 --start 1000
+```
+
+See [Ro-schema transaction resolution](ro-schema-transaction-performance.md)
+for the exact fixture, phase evidence, optimization invariant, and same-shape
+before/after Ro result.
+
 ## Durable storage amplification
 
 The deterministic storage benchmark writes 1,000 application assertions using

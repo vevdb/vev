@@ -1,0 +1,108 @@
+(package main)
+
+(import arr "kvist:arr")
+(import bench "./support")
+(import cli "../deps/cli")
+(import fmt "core:fmt")
+(import os "core:os")
+(import time "core:time")
+(import vev "../src/vev")
+
+(defn transaction-text [sample: int] -> string
+  (let [item-id (fmt.tprintf "item-vev-ro-profile-%03d" sample)
+        operation-id (fmt.tprintf "operation-vev-ro-profile-%03d" sample)
+        out
+          (fmt.tprintf
+            "[{{:db/id -1 :operation/id \"%s\"
+               :ro/type :ro.type/operation-receipt
+               :operation/workspace [:ro/id \"workspace-read-bench\"]
+               :operation/workspace-id \"workspace-read-bench\"
+               :operation/actor [:ro/id \"actor-owner\"]
+               :operation/actor-id \"actor-owner\"
+               :operation/executor-kind :executor.kind/human
+               :operation/executor-id \"actor-owner\"
+               :operation/authority-epoch 1
+               :operation/authority-sequence %d
+               :operation/recorded-at %d
+               :operation/command-kind \"create-item\"
+               :operation/command-version 1
+               :operation/signature \"%s\"
+               :operation/subject-id \"%s\"
+               :operation/result :operation.result/success
+               :operation/code \"accepted\"
+               :operation/message \"Vev Ro transaction profile\"
+               :operation/workspace-revision %d
+               :operation/source \"vev-transaction-boundary\"
+               :operation/cause \"ro-storage-profile\"}}
+              {{:db/id -2 :ro/id \"%s\" :ro/type :ro.type/item
+               :ro/title \"Vev Ro transaction profile Task\"
+               :item/reference \"%s\"
+               :item/workspace [:ro/id \"workspace-read-bench\"]
+               :item/workspace-id \"workspace-read-bench\"
+               :item/directory-order 0 :item/kind :item.kind/task
+               :item/scope :scope/workspace :item/revision 0
+               :item/document-version 1 :item/document-revision 0
+               :item/trashed false :item/created-by [:ro/id \"actor-owner\"]
+               :item/created-operation [:operation/id \"%s\"]
+               :item/modified-by [:ro/id \"actor-owner\"]
+               :item/modified-operation [:operation/id \"%s\"]
+               :task/material-revision 0}}]"
+            operation-id (+ 100000 sample) sample operation-id item-id sample
+            item-id item-id operation-id operation-id)]
+    out))
+
+(defn main []
+  (defer (free_all context.allocator))
+  (when (< (count os.args) 2)
+    (panic
+      "usage: ro-transaction-profile DATABASE [--samples N] [--start N] [--print-samples]"))
+  (let [path os.args[1]
+        samples-count (cli.int-option os.args "--samples" 5)
+        start-sample (cli.int-option os.args "--start" 1000)
+        print-samples? (cli.flag os.args "--print-samples")
+        [store open-ok open-error] (vev.open-sqlite-conn path)]
+    (when (<= samples-count 0)
+      (panic "--samples must be positive"))
+    (when (not open-ok)
+      (panic open-error))
+    (defer (vev.close-sqlite-conn store))
+    (let [[resident-ok resident-error]
+            (vev.sqlite-conn-ensure-resident! (addr store))]
+      (when (not resident-ok)
+        (panic resident-error)))
+    (set! store.resident-reads-enabled true)
+    (let [samples (make [dynamic]f64 0 samples-count)]
+      (defer (delete samples))
+      (vev.reset-sqlite-tx-phase-profile! (addr store))
+      (for [sample
+            (arr.range start-sample (+ start-sample samples-count))]
+        (let [text (transaction-text sample)
+              start (time.now)
+              report
+                (vev.transact-sqlite-store-report-text (addr store) text)
+              elapsed (bench.elapsed-us start)]
+          (delete text)
+          (when (not report.ok)
+            (let [message (fmt.tprintf "%s" report.error)]
+              (vev.delete-store-tx-report report)
+              (panic message)))
+          (when print-samples?
+            (fmt.printfln "sample=%d elapsed_us=%.1f" sample elapsed))
+          (arr.push! samples elapsed)
+          (vev.delete-store-tx-report report)))
+      (let [timing (bench.timing-from-samples (slice samples 0))
+            profile (vev.sqlite-tx-phase-profile (addr store))
+            transactions (f64 profile.transactions)]
+        (fmt.printfln
+          "samples=%d median_us=%.1f p95_us=%.1f effective_datoms=%.1f resolution_us=%.1f lookup_ref_us=%.1f tempid_us=%.1f op_generation_us=%.1f planning_us=%.1f db_after_us=%.1f canonical_append_us=%.1f derived_us=%.1f sqlite_commit_us=%.1f"
+          samples-count timing.median-us timing.p95-us
+          (/ (f64 profile.effective-datoms) transactions)
+          (/ profile.resolution-us transactions)
+          (/ profile.resolution-lookup-ref-us transactions)
+          (/ profile.resolution-tempid-us transactions)
+          (/ profile.resolution-op-generation-us transactions)
+          (/ profile.planning-us transactions)
+          (/ profile.db-after-us transactions)
+          (/ profile.canonical-append-us transactions)
+          (/ profile.derived-bookkeeping-us transactions)
+          (/ profile.sqlite-commit-us transactions))))))

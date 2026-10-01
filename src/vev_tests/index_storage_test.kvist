@@ -1393,6 +1393,117 @@
     (vev.delete-live-tx-report-shallow report)
     (vev.delete-shared-conn conn)))
 
+(t.deftest shared-conn-keeps-new-identity-distinct-with-tuple-schema
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        schema
+          (vev.shared-conn-transact
+            (addr conn)
+            ([]vev.Tx-Data
+              [(vev.add 100 ":db/ident" (vev.value-keyword ":user/id"))
+               (vev.add 100 ":db/valueType" (vev.value-keyword ":db.type/string"))
+               (vev.add 100 ":db/unique" (vev.value-keyword ":db.unique/identity"))
+               (vev.add 101 ":db/ident" (vev.value-keyword ":user/id+code"))
+               (vev.add 101 ":db/valueType" (vev.value-keyword ":db.type/tuple"))
+               (vev.add 101 ":db/tupleAttrs"
+                 (vev.value-keyword-vector
+                   ([]string [":user/id" ":user/code"])))
+               (vev.add 101 ":db/unique"
+                 (vev.value-keyword ":db.unique/identity"))]))
+        seed
+          (vev.shared-conn-transact
+            (addr conn)
+            ([]vev.Tx-Data
+              [(vev.add 1 ":user/id" (vev.value-string "existing"))
+               (vev.add 1 ":user/code" (vev.value-string "shared"))]))
+        report
+          (vev.shared-conn-transact
+            (addr conn)
+            ([]vev.Tx-Data
+              [(vev.add-tempid "new" ":user/id" (vev.value-string "new"))
+               (vev.add-tempid "new" ":user/code"
+                 (vev.value-string "shared"))]))
+        [new-e new-ok]
+          (vev.tempid-lookup (slice report.tempids 0) "new")
+        source (vev.shared-conn-read-source (addr conn))
+        result
+          (vev.q-text-db-read-source source
+            "[:find ?e ?tuple :where [?e :user/id \"new\"] [?e :user/id+code ?tuple]]")]
+    (t.is schema.ok schema.error)
+    (t.is seed.ok seed.error)
+    (t.is report.ok report.error)
+    (t.is new-ok)
+    (t.is (not (= new-e 1)))
+    (t.is result.ok result.error)
+    (t.is (= (count result.rows) 1))
+    (t.is (= result.rows[0].values[0].entity new-e))
+    (t.is (= result.rows[0].values[1].kind .Vector))
+    (t.is (= result.rows[0].values[1].items[0].text "new"))
+    (t.is (= result.rows[0].values[1].items[1].text "shared"))
+    (vev.delete-result-set-owned-values result)
+    (vev.delete-live-tx-report-shallow schema)
+    (vev.delete-live-tx-report-shallow seed)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
+(t.deftest shared-conn-still-checks-tuples-without-the-missing-identity
+  (defer (free_all context.allocator))
+  (let [conn (vev.create-shared-conn 2)
+        schema
+          (vev.shared-conn-transact
+            (addr conn)
+            ([]vev.Tx-Data
+              [(vev.add 100 ":db/ident" (vev.value-keyword ":user/id"))
+               (vev.add 100 ":db/valueType" (vev.value-keyword ":db.type/string"))
+               (vev.add 100 ":db/cardinality"
+                 (vev.value-keyword ":db.cardinality/one"))
+               (vev.add 100 ":db/unique" (vev.value-keyword ":db.unique/identity"))
+               (vev.add 101 ":db/ident"
+                 (vev.value-keyword ":user/id+code"))
+               (vev.add 101 ":db/valueType"
+                 (vev.value-keyword ":db.type/tuple"))
+               (vev.add 101 ":db/tupleAttrs"
+                 (vev.value-keyword-vector
+                   ([]string [":user/id" ":user/code"])))
+               (vev.add 101 ":db/unique"
+                 (vev.value-keyword ":db.unique/identity"))
+               (vev.add 102 ":db/ident"
+                 (vev.value-keyword ":user/email+code"))
+               (vev.add 102 ":db/valueType"
+                 (vev.value-keyword ":db.type/tuple"))
+               (vev.add 102 ":db/tupleAttrs"
+                 (vev.value-keyword-vector
+                   ([]string [":user/email" ":user/code"])))
+               (vev.add 102 ":db/unique"
+                 (vev.value-keyword ":db.unique/identity"))]))
+        seed
+          (vev.shared-conn-transact
+            (addr conn)
+            ([]vev.Tx-Data
+              [(vev.add 1 ":user/email" (vev.value-string "same@example.com"))
+               (vev.add 1 ":user/code" (vev.value-string "shared"))]))
+        report
+          (vev.shared-conn-transact
+            (addr conn)
+            ([]vev.Tx-Data
+              [(vev.add-tempid "candidate" ":user/id"
+                 (vev.value-string "new"))
+               (vev.add-tempid "candidate" ":user/email"
+                 (vev.value-string "same@example.com"))
+               (vev.add-tempid "candidate" ":user/code"
+                 (vev.value-string "shared"))]))
+        [candidate-e candidate-ok]
+          (vev.tempid-lookup (slice report.tempids 0) "candidate")]
+    (t.is schema.ok schema.error)
+    (t.is seed.ok seed.error)
+    (t.is report.ok report.error)
+    (t.is candidate-ok)
+    (t.is (= candidate-e 1))
+    (vev.delete-live-tx-report-shallow schema)
+    (vev.delete-live-tx-report-shallow seed)
+    (vev.delete-live-tx-report-shallow report)
+    (vev.delete-shared-conn conn)))
+
 (t.deftest shared-conn-merges-tuple-tempids-with-ordered-tuple-transitions
   (defer (free_all context.allocator))
   (let [conn (vev.create-shared-conn 2)
